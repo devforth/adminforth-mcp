@@ -9,7 +9,11 @@ import {
 } from 'adminforth';
 import { AdminForthApiTools } from './apiTools.js';
 import { formatMcpExecutedBy, readMcpClient, UNKNOWN_CLIENT } from './clientInfo.js';
-import { handleMcpProtocol } from './mcpProtocol.js';
+import {
+  createMcpServerPresentation,
+  handleMcpProtocol,
+  type McpServerPresentation,
+} from './mcpProtocol.js';
 import { McpAuthSecretStore } from './authSecretStore.js';
 import type { PluginOptions } from './types.js';
 
@@ -42,6 +46,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   pluginsScope: 'global' = 'global';
   private authSecretStore!: McpAuthSecretStore;
   private apiTools!: AdminForthApiTools;
+  private serverPresentation!: McpServerPresentation;
 
   constructor(options: PluginOptions) {
     super(options, import.meta.url);
@@ -93,6 +98,11 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     this.apiTools = new AdminForthApiTools(
       adminforth,
       new Set([this.options.authSecretResource.resourceId]),
+    );
+    this.serverPresentation = createMcpServerPresentation(
+      adminforth.config.customization.brandName,
+      this.options.adminPanelOrigin,
+      adminforth.config.baseUrl,
     );
   }
 
@@ -206,6 +216,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       executedBy: formatMcpExecutedBy(client, authenticated.name),
     };
     const protocolResponse = await handleMcpProtocol({
+      ...this.serverPresentation,
       body: input.body,
       headers: input.headers,
       listTools: () => this.apiTools.list(),

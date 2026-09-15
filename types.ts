@@ -13,6 +13,8 @@ export interface McpAuthSecretResourceOptions {
 
 export interface PluginOptions extends PluginsCommonOptions {
   authSecretResource: McpAuthSecretResourceOptions;
+  /** Public origin of this AdminForth installation, without the AdminForth baseUrl path. */
+  adminPanelOrigin?: string;
 }
 
 export interface McpClientInfo {

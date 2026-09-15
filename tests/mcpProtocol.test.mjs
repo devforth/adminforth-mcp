@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleMcpProtocol } from '../dist/mcpProtocol.js';
+import {
+  createMcpServerPresentation,
+  handleMcpProtocol,
+} from '../dist/mcpProtocol.js';
+
+const serverPresentation = createMcpServerPresentation(
+  'Acme Cars',
+  'https://admin.acme.example',
+  '/backoffice',
+);
 
 const modernMeta = {
   'io.modelcontextprotocol/protocolVersion': '2026-07-28',
@@ -8,8 +17,18 @@ const modernMeta = {
   'io.modelcontextprotocol/clientInfo': { name: 'Codex', version: '1.0.0' },
 };
 
+test('identifies an admin panel by brand when no canonical URL is configured', () => {
+  const presentation = createMcpServerPresentation('Internal CRM');
+
+  assert.equal(presentation.serverInfo.title, 'Internal CRM Admin Panel');
+  assert.equal(presentation.serverInfo.description, 'AdminForth admin panel for "Internal CRM".');
+  assert.equal('websiteUrl' in presentation.serverInfo, false);
+  assert.match(presentation.instructions, /AdminForth admin panel for "Internal CRM"/);
+});
+
 test('serves deterministic modern tools/list results', async () => {
   const response = await handleMcpProtocol({
+    ...serverPresentation,
     body: {
       jsonrpc: '2.0',
       id: 1,
@@ -31,10 +50,15 @@ test('serves deterministic modern tools/list results', async () => {
   assert.equal(response.body.result.resultType, 'complete');
   assert.equal(response.body.result.cacheScope, 'private');
   assert.equal(response.body.result.tools[0].name, 'get_resource');
+  assert.equal(
+    response.body.result._meta['io.modelcontextprotocol/serverInfo'].title,
+    'Acme Cars Admin Panel',
+  );
 });
 
 test('rejects mismatched modern request headers', async () => {
   const response = await handleMcpProtocol({
+    ...serverPresentation,
     body: {
       jsonrpc: '2.0',
       id: 1,
@@ -56,6 +80,7 @@ test('rejects mismatched modern request headers', async () => {
 
 test('supports legacy initialize and tool calls', async () => {
   const initialize = await handleMcpProtocol({
+    ...serverPresentation,
     body: {
       jsonrpc: '2.0',
       id: 'init',
@@ -67,8 +92,12 @@ test('supports legacy initialize and tool calls', async () => {
     callTool: async () => ({ output: null, isError: false }),
   });
   assert.equal(initialize.body.result.protocolVersion, '2025-06-18');
+  assert.equal(initialize.body.result.serverInfo.title, 'Acme Cars Admin Panel');
+  assert.equal(initialize.body.result.serverInfo.websiteUrl, 'https://admin.acme.example/backoffice');
+  assert.match(initialize.body.result.instructions, /admin panel for "Acme Cars" at https:\/\/admin\.acme\.example\/backoffice/);
 
   const call = await handleMcpProtocol({
+    ...serverPresentation,
     body: {
       jsonrpc: '2.0',
       id: 2,
@@ -85,6 +114,7 @@ test('supports legacy initialize and tool calls', async () => {
 
 test('negotiates the latest legacy version when the requested version is unsupported', async () => {
   const response = await handleMcpProtocol({
+    ...serverPresentation,
     body: {
       jsonrpc: '2.0',
       id: 'init',

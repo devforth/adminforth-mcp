@@ -8,19 +8,51 @@ const LEGACY_PROTOCOL_VERSIONS = new Set([
   '2025-03-26',
 ]);
 
-const SERVER_INFO = {
-  name: 'adminforth-mcp',
-  version: '1.0.0',
-};
 const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
 const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
 const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
 
 type JsonRpcId = string | number;
 
+export interface McpServerInfo {
+  name: string;
+  title: string;
+  version: string;
+  description: string;
+  websiteUrl?: string;
+}
+
+export interface McpServerPresentation {
+  serverInfo: McpServerInfo;
+  instructions: string;
+}
+
+export function createMcpServerPresentation(
+  brandName: string,
+  adminPanelOrigin?: string,
+  baseUrl = '',
+): McpServerPresentation {
+  const adminPanelUrl = adminPanelOrigin
+    ? new URL(baseUrl || '/', adminPanelOrigin).toString()
+    : undefined;
+  const adminPanel = `AdminForth admin panel for "${brandName}"${adminPanelUrl ? ` at ${adminPanelUrl}` : ''}`;
+  return {
+    serverInfo: {
+      name: 'adminforth-mcp',
+      title: `${brandName} Admin Panel`,
+      version: '1.0.0',
+      description: `${adminPanel}.`,
+      ...(adminPanelUrl && { websiteUrl: adminPanelUrl }),
+    },
+    instructions: `This is the ${adminPanel}. Use its tools to read and update data allowed for the authenticated user.`,
+  };
+}
+
 export interface McpProtocolContext {
   body: Record<string, any>;
   headers: Record<string, any>;
+  serverInfo: McpServerInfo;
+  instructions: string;
   listTools: () => McpToolDefinition[];
   callTool: (
     name: string,
@@ -49,14 +81,18 @@ function isModernRequest(body: Record<string, any>): boolean {
   return body.params?._meta?.[PROTOCOL_VERSION_META_KEY] === MODERN_PROTOCOL_VERSION;
 }
 
-function completeResult(result: Record<string, unknown>, modern: boolean) {
+function completeResult(
+  result: Record<string, unknown>,
+  modern: boolean,
+  serverInfo: McpServerInfo,
+) {
   if (!modern) return result;
   return {
     resultType: 'complete',
     ...result,
     _meta: {
       ...(result._meta as Record<string, unknown> | undefined),
-      [SERVER_INFO_META_KEY]: SERVER_INFO,
+      [SERVER_INFO_META_KEY]: serverInfo,
     },
   };
 }
@@ -65,13 +101,14 @@ function successResponse(
   id: JsonRpcId,
   result: Record<string, unknown>,
   modern: boolean,
+  serverInfo: McpServerInfo,
 ): McpProtocolResponse {
   return {
     status: 200,
     body: {
       jsonrpc: '2.0',
       id,
-      result: completeResult(result, modern),
+      result: completeResult(result, modern, serverInfo),
     },
   };
 }
@@ -101,7 +138,7 @@ function serializeToolOutput(output: unknown): string {
 export async function handleMcpProtocol(
   context: McpProtocolContext,
 ): Promise<McpProtocolResponse> {
-  const { body, headers } = context;
+  const { body, headers, serverInfo, instructions } = context;
   if (body.jsonrpc !== '2.0' || typeof body.method !== 'string') {
     return errorResponse(body.id ?? null, -32600, 'Invalid JSON-RPC request.');
   }
@@ -131,10 +168,10 @@ export async function handleMcpProtocol(
       return successResponse(body.id, {
         supportedVersions: [MODERN_PROTOCOL_VERSION],
         capabilities: { tools: {} },
-        instructions: 'Use AdminForth tools to read and update data allowed for the authenticated user.',
+        instructions,
         ttlMs: 0,
         cacheScope: 'private',
-      }, true);
+      }, true, serverInfo);
 
     case 'initialize': {
       const requestedVersion = body.params?.protocolVersion;
@@ -143,19 +180,19 @@ export async function handleMcpProtocol(
           ? requestedVersion
           : LEGACY_PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: SERVER_INFO,
-        instructions: 'Use AdminForth tools to read and update data allowed for the authenticated user.',
-      }, false);
+        serverInfo,
+        instructions,
+      }, false, serverInfo);
     }
 
     case 'ping':
-      return successResponse(body.id, {}, modern);
+      return successResponse(body.id, {}, modern, serverInfo);
 
     case 'tools/list':
       return successResponse(body.id, {
         tools: context.listTools(),
         ...(modern && { ttlMs: 0, cacheScope: 'private' }),
-      }, modern);
+      }, modern, serverInfo);
 
     case 'tools/call': {
       if (typeof body.params?.name !== 'string') {
@@ -165,7 +202,7 @@ export async function handleMcpProtocol(
       return successResponse(body.id, {
         content: [{ type: 'text', text: serializeToolOutput(result.output) }],
         isError: result.isError,
-      }, modern);
+      }, modern, serverInfo);
     }
 
     default:
