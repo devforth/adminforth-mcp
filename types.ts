@@ -1,18 +1,18 @@
 import type { PluginsCommonOptions } from 'adminforth';
 
-export interface McpTokenResourceOptions {
+export interface McpAuthSecretResourceOptions {
   resourceId: string;
   idField: string;
   nameField: string;
-  tokenHashField: string;
+  secretHashField: string;
   userIdField: string;
   createdAtField: string;
   lastUsedAtField: string;
-  agentField: string;
+  lastUsedByAgentField: string;
 }
 
 export interface PluginOptions extends PluginsCommonOptions {
-  tokenResource: McpTokenResourceOptions;
+  authSecretResource: McpAuthSecretResourceOptions;
 }
 
 export interface McpClientInfo {

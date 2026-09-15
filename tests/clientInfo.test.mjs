@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalAgentName, readMcpClient } from '../dist/clientInfo.js';
+import { canonicalAgentName, formatMcpExecutedBy, readMcpClient } from '../dist/clientInfo.js';
 
 test('reads modern per-request MCP client info', () => {
   assert.deepEqual(readMcpClient({
@@ -31,4 +31,8 @@ test('normalizes known clients for audit attribution', () => {
   assert.equal(canonicalAgentName('undici'), 'codex');
   assert.equal(canonicalAgentName('claude-code'), 'claude-code');
   assert.equal(canonicalAgentName('gemini-cli'), 'gemini');
+  assert.equal(
+    formatMcpExecutedBy({ client: 'codex-cli', ver: '1.2.3' }, 'Production Codex'),
+    'codex@1.2.3 | Production Codex',
+  );
 });

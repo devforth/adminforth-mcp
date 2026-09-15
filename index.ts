@@ -8,12 +8,12 @@ import {
   type IHttpServer,
 } from 'adminforth';
 import { AdminForthApiTools } from './apiTools.js';
-import { canonicalAgentName, readMcpClient, UNKNOWN_CLIENT } from './clientInfo.js';
+import { formatMcpExecutedBy, readMcpClient, UNKNOWN_CLIENT } from './clientInfo.js';
 import { handleMcpProtocol } from './mcpProtocol.js';
-import { McpTokenStore } from './tokenStore.js';
+import { McpAuthSecretStore } from './authSecretStore.js';
 import type { PluginOptions } from './types.js';
 
-const BEARER_TOKEN_RE = /^Bearer (afmcp_[A-Za-z0-9_-]+)$/i;
+const BEARER_SECRET_RE = /^Bearer (afmcp_[A-Za-z0-9_-]+)$/i;
 const MCP_PATH = '/mcp';
 
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
@@ -33,14 +33,14 @@ function jsonRpcAuthError(id: string | number | null = null) {
   return {
     jsonrpc: '2.0',
     id,
-    error: { code: -32001, message: 'Invalid or revoked MCP token.' },
+    error: { code: -32001, message: 'Invalid or revoked MCP auth secret.' },
   };
 }
 
 export default class AdminForthMcpPlugin extends AdminForthPlugin {
   options: PluginOptions;
   pluginsScope: 'global' = 'global';
-  private tokenStore!: McpTokenStore;
+  private authSecretStore!: McpAuthSecretStore;
   private apiTools!: AdminForthApiTools;
 
   constructor(options: PluginOptions) {
@@ -55,21 +55,21 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
 
   modifyGlobalConfig(adminforth: IAdminForth) {
     super.modifyGlobalConfig(adminforth);
-    const tokenResource = adminforth.config.resources.find(
-      (resource) => resource.resourceId === this.options.tokenResource.resourceId,
+    const authSecretResource = adminforth.config.resources.find(
+      (resource) => resource.resourceId === this.options.authSecretResource.resourceId,
     );
-    if (!tokenResource) {
+    if (!authSecretResource) {
       throw new Error(
-        `AdminForthMcpPlugin: token resource "${this.options.tokenResource.resourceId}" not found`,
+        `AdminForthMcpPlugin: auth secret resource "${this.options.authSecretResource.resourceId}" not found`,
       );
     }
 
-    this.validateTokenResource(tokenResource);
-    const tokenHashColumn = tokenResource.columns.find(
-      (column) => column.name === this.options.tokenResource.tokenHashField,
+    this.validateAuthSecretResource(authSecretResource);
+    const secretHashColumn = authSecretResource.columns.find(
+      (column) => column.name === this.options.authSecretResource.secretHashField,
     )!;
-    tokenHashColumn.backendOnly = true;
-    tokenHashColumn.showIn = {
+    secretHashColumn.backendOnly = true;
+    secretHashColumn.showIn = {
       show: false,
       list: false,
       create: false,
@@ -89,34 +89,34 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       });
     }
 
-    this.tokenStore = new McpTokenStore(adminforth, this.options.tokenResource);
+    this.authSecretStore = new McpAuthSecretStore(adminforth, this.options.authSecretResource);
     this.apiTools = new AdminForthApiTools(
       adminforth,
-      new Set([this.options.tokenResource.resourceId]),
+      new Set([this.options.authSecretResource.resourceId]),
     );
   }
 
-  private validateTokenResource(resource: AdminForthResource): void {
-    const fields = this.options.tokenResource;
+  private validateAuthSecretResource(resource: AdminForthResource): void {
+    const fields = this.options.authSecretResource;
     for (const fieldName of [
       fields.idField,
       fields.nameField,
-      fields.tokenHashField,
+      fields.secretHashField,
       fields.userIdField,
       fields.createdAtField,
       fields.lastUsedAtField,
-      fields.agentField,
+      fields.lastUsedByAgentField,
     ]) {
       if (!resource.columns.some((column) => column.name === fieldName)) {
         throw new Error(
-          `AdminForthMcpPlugin: column "${fieldName}" not found in token resource "${resource.resourceId}"`,
+          `AdminForthMcpPlugin: column "${fieldName}" not found in auth secret resource "${resource.resourceId}"`,
         );
       }
     }
 
     if (!resource.columns.find((column) => column.name === fields.idField)!.primaryKey) {
       throw new Error(
-        `AdminForthMcpPlugin: column "${fields.idField}" must be the primary key of token resource "${resource.resourceId}"`,
+        `AdminForthMcpPlugin: column "${fields.idField}" must be the primary key of auth secret resource "${resource.resourceId}"`,
       );
     }
   }
@@ -124,30 +124,30 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   setupEndpoints(server: IHttpServer) {
     server.endpoint({
       method: 'GET',
-      path: `${MCP_PATH}/tokens`,
+      path: `${MCP_PATH}/auth-secrets`,
       handler: async ({ adminUser }) => ({
-        tokens: await this.tokenStore.list(adminUser),
+        authSecrets: await this.authSecretStore.list(adminUser),
       }),
     });
 
     server.endpoint({
       method: 'POST',
-      path: `${MCP_PATH}/tokens`,
+      path: `${MCP_PATH}/auth-secrets`,
       handler: async (input) => {
         const name = String(input.body.name ?? '').trim();
         if (!name) {
           input.response.setStatus(400);
-          return { error: 'Token name is required' };
+          return { error: 'Auth secret name is required' };
         }
-        return this.tokenStore.create(name, input.adminUser, requestExtra(input));
+        return this.authSecretStore.create(name, input.adminUser, requestExtra(input));
       },
     });
 
     server.endpoint({
       method: 'DELETE',
-      path: `${MCP_PATH}/tokens`,
+      path: `${MCP_PATH}/auth-secrets`,
       handler: async (input) => {
-        const result = await this.tokenStore.revoke(
+        const result = await this.authSecretStore.revoke(
           String(input.body.id),
           input.adminUser,
           requestExtra(input),
@@ -175,9 +175,9 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       };
     }
 
-    const bearerMatch = String(input.headers.authorization ?? '').match(BEARER_TOKEN_RE);
+    const bearerMatch = String(input.headers.authorization ?? '').match(BEARER_SECRET_RE);
     const authenticated = bearerMatch
-      ? await this.tokenStore.authenticate(bearerMatch[1])
+      ? await this.authSecretStore.authenticate(bearerMatch[1])
       : null;
     if (!authenticated) {
       input.response.setHeader('WWW-Authenticate', 'Bearer');
@@ -199,11 +199,11 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     const client = reportedClient.client === UNKNOWN_CLIENT && authenticated.client
       ? authenticated.client
       : reportedClient;
-    this.tokenStore.touch(authenticated.recordId, reportedClient);
+    this.authSecretStore.touch(authenticated.recordId, reportedClient);
 
     const adminUser: AdminUserWithExecutor = {
       ...authenticated.adminUser,
-      executedBy: canonicalAgentName(client.client),
+      executedBy: formatMcpExecutedBy(client, authenticated.name),
     };
     const protocolResponse = await handleMcpProtocol({
       body: input.body,
@@ -228,6 +228,6 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   }
 }
 
-export type { McpTokenResourceOptions, PluginOptions } from './types.js';
-export { canonicalAgentName, readMcpClient } from './clientInfo.js';
+export type { McpAuthSecretResourceOptions, PluginOptions } from './types.js';
+export { canonicalAgentName, formatMcpExecutedBy, readMcpClient } from './clientInfo.js';
 export { handleMcpProtocol } from './mcpProtocol.js';

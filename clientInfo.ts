@@ -44,3 +44,8 @@ export function canonicalAgentName(client: string): string {
   if (client.includes('gemini')) return 'gemini';
   return client;
 }
+
+export function formatMcpExecutedBy(client: McpClientInfo, authSecretName: string): string {
+  const version = client.ver ? `@${client.ver}` : '';
+  return `${canonicalAgentName(client.client)}${version} | ${authSecretName}`;
+}

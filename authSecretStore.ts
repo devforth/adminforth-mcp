@@ -9,28 +9,29 @@ import {
   type IAdminForth,
 } from 'adminforth';
 import { UNKNOWN_CLIENT } from './clientInfo.js';
-import type { McpClientInfo, McpTokenResourceOptions } from './types.js';
+import type { McpAuthSecretResourceOptions, McpClientInfo } from './types.js';
 
-const TOKEN_PREFIX = 'afmcp_';
+const SECRET_PREFIX = 'afmcp_';
 
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
 
-export interface AuthenticatedMcpToken {
+export interface AuthenticatedMcpSecret {
   adminUser: AdminUserWithExecutor;
   client: McpClientInfo | null;
+  name: string;
   recordId: string;
 }
 
-function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
+function hashSecret(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
 }
 
-export class McpTokenStore {
+export class McpAuthSecretStore {
   private readonly resource: AdminForthResource;
 
   constructor(
     private readonly adminforth: IAdminForth,
-    private readonly options: McpTokenResourceOptions,
+    private readonly options: McpAuthSecretResourceOptions,
   ) {
     this.resource = adminforth.config.resources.find(
       (resource) => resource.resourceId === options.resourceId,
@@ -51,13 +52,15 @@ export class McpTokenStore {
       name: record[fields.nameField],
       createdAt: record[fields.createdAtField],
       lastUsedAt: record[fields.lastUsedAtField] ?? null,
-      agent: record[fields.agentField] ? JSON.parse(record[fields.agentField]) : null,
+      lastUsedByAgent: record[fields.lastUsedByAgentField]
+        ? JSON.parse(record[fields.lastUsedByAgentField])
+        : null,
     }));
   }
 
   async create(name: string, adminUser: AdminUser, extra: HttpExtra) {
     const fields = this.options;
-    const token = `${TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
+    const secret = `${SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;
     const result = await this.adminforth.createResourceRecord({
       resource: this.resource,
       adminUser,
@@ -65,15 +68,15 @@ export class McpTokenStore {
       record: {
         [fields.idField]: randomUUID(),
         [fields.nameField]: name,
-        [fields.tokenHashField]: hashToken(token),
+        [fields.secretHashField]: hashSecret(secret),
         [fields.userIdField]: adminUser.pk,
         [fields.createdAtField]: new Date().toISOString(),
         [fields.lastUsedAtField]: null,
-        [fields.agentField]: null,
+        [fields.lastUsedByAgentField]: null,
       },
     });
 
-    return result.error ? { error: result.error } : { token };
+    return result.error ? { error: result.error } : { secret };
   }
 
   async revoke(id: string, adminUser: AdminUser, extra: HttpExtra) {
@@ -83,7 +86,7 @@ export class McpTokenStore {
       Filters.EQ(fields.userIdField, adminUser.pk),
     ));
 
-    if (!record) return { error: 'MCP token not found' };
+    if (!record) return { error: 'MCP auth secret not found' };
 
     return this.adminforth.deleteResourceRecord({
       resource: this.resource,
@@ -94,10 +97,10 @@ export class McpTokenStore {
     });
   }
 
-  async authenticate(token: string): Promise<AuthenticatedMcpToken | null> {
+  async authenticate(secret: string): Promise<AuthenticatedMcpSecret | null> {
     const fields = this.options;
     const record = await this.adminforth.resource(fields.resourceId).get(
-      Filters.EQ(fields.tokenHashField, hashToken(token)),
+      Filters.EQ(fields.secretHashField, hashSecret(secret)),
     );
     if (!record) return null;
 
@@ -117,7 +120,10 @@ export class McpTokenStore {
         username: dbUser[auth.usernameField],
         dbUser,
       },
-      client: record[fields.agentField] ? JSON.parse(record[fields.agentField]) : null,
+      client: record[fields.lastUsedByAgentField]
+        ? JSON.parse(record[fields.lastUsedByAgentField])
+        : null,
+      name: record[fields.nameField],
       recordId: record[fields.idField],
     };
   }
@@ -128,11 +134,11 @@ export class McpTokenStore {
       [fields.lastUsedAtField]: new Date().toISOString(),
     };
     if (client.client !== UNKNOWN_CLIENT) {
-      updates[fields.agentField] = JSON.stringify(client);
+      updates[fields.lastUsedByAgentField] = JSON.stringify(client);
     }
 
     void this.adminforth.resource(fields.resourceId).update(recordId, updates).catch((error) => {
-      logger.error(`AdminForthMcpPlugin: failed to update MCP token usage: ${String(error)}`);
+      logger.error(`AdminForthMcpPlugin: failed to update MCP auth secret usage: ${String(error)}`);
     });
   }
 }
