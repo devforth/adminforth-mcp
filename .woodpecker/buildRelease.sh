@@ -1,6 +1,6 @@
 #!/bin/bash
 
-pnpm run build 2>&1 | tee build.log
+pnpm test 2>&1 | tee build.log
 build_status=${PIPESTATUS[0]}
 
 if [ $build_status -ne 0 ]; then

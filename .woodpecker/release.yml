@@ -17,23 +17,27 @@ steps:
       - infisical export --domain https://vault.devforth.io/api --format=dotenv-export --env="prod" > /woodpecker/deploy.vault.env
 
   build:
-    image: devforth/node20-pnpm:latest
+    image: node:24-bookworm
     when:
       - event: push
     commands:
+      - corepack enable
+      - corepack install --global pnpm@11.24.0
       - apt update && apt install -y rsync
       - . /woodpecker/deploy.vault.env
       - pnpm install
-      - pnpm test
       - /bin/bash ./.woodpecker/buildRelease.sh
+      - npm audit signatures
 
   release:
-    image: devforth/node20-pnpm:latest
+    image: node:24-bookworm
     when:
       - event: push
         branch:
           - main
     commands:
+      - corepack enable
+      - corepack install --global pnpm@11.24.0
       - . /woodpecker/deploy.vault.env
       - pnpm exec semantic-release
 
