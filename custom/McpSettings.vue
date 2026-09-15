@@ -36,7 +36,7 @@
     >
       <template #cell:name="{ item }">
         <p class="font-medium text-gray-900 dark:text-white">{{ item.name }}</p>
-        <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ formatDate(item.createdAt) }}</p>
+        <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ formatDateTime(item.createdAt) }}</p>
       </template>
 
       <template #cell:lastUsedByAgent="{ item }">
@@ -48,7 +48,7 @@
       </template>
 
       <template #cell:lastUsedAt="{ item }">
-        {{ item.lastUsedAt ? formatDate(item.lastUsedAt) : $t('Never') }}
+        {{ item.lastUsedAt ? formatDateTime(item.lastUsedAt) : $t('Never') }}
       </template>
 
       <template #cell:actions="{ item }">
@@ -97,7 +97,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button, Dialog, Input, Table } from '@/afcl';
 import adminforth from '@/adminforth';
-import { callAdminForthApi } from '@/utils';
+import { callAdminForthApi, formatDateTime } from '@/utils';
 import claudeCodeIcon from './icons/claude-code.svg';
 import codexIcon from './icons/codex.svg';
 import geminiIcon from './icons/gemini.svg';
@@ -236,10 +236,6 @@ function describeAgent(agent: Agent) {
     icon = geminiIcon;
   }
   return { label: agent.ver ? `${name} v${agent.ver}` : name, icon };
-}
-
-function formatDate(value: string) {
-  return new Date(value).toLocaleString();
 }
 
 async function copy(value: string, message: string) {
