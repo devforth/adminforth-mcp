@@ -36,3 +36,50 @@ test('normalizes known clients for audit attribution', () => {
     'codex@1.2.3 | Production Codex',
   );
 });
+
+test('sanitizes attacker-controlled client name and version', () => {
+  // a version is free-form client input: it must not be able to forge the "| <auth secret name>"
+  // part of the audit attribution, and it must stay short enough to be stored safely
+  assert.deepEqual(readMcpClient({
+    method: 'initialize',
+    params: { clientInfo: { name: 'Codex', version: '1.0 | Production Codex' } },
+  }, {}), { client: 'codex', ver: '1.0ProductionCodex' });
+
+  assert.equal(
+    formatMcpExecutedBy(
+      readMcpClient({
+        method: 'initialize',
+        params: { clientInfo: { name: 'Codex', version: '1 | Root Key' } },
+      }, {}),
+      'My Key',
+    ),
+    'codex@1RootKey | My Key',
+  );
+
+  assert.equal(readMcpClient({
+    method: 'initialize',
+    params: { clientInfo: { name: 'Codex', version: 'v'.repeat(500) } },
+  }, {}).ver.length, 32);
+
+  assert.equal(readMcpClient({
+    method: 'initialize',
+    params: { clientInfo: { name: 'x'.repeat(500), version: '1.0.0' } },
+  }, {}).client.length, 64);
+
+  assert.deepEqual(readMcpClient({
+    method: 'initialize',
+    params: { clientInfo: { name: 'Codex', version: { toString: () => 'nope' } } },
+  }, {}), { client: 'codex', ver: null });
+});
+
+test('falls back to user-agent and unknown agent when client name is unusable', () => {
+  assert.deepEqual(readMcpClient({
+    method: 'initialize',
+    params: { clientInfo: { name: '***', version: '1.0.0' } },
+  }, { 'user-agent': 'undici/6.0.0' }), { client: 'undici', ver: '6.0.0' });
+
+  assert.deepEqual(
+    readMcpClient({ method: 'initialize', params: { clientInfo: { name: 42 } } }, {}),
+    { client: 'unknown-agent', ver: null },
+  );
+});

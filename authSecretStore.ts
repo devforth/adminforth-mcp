@@ -26,6 +26,23 @@ function hashSecret(secret: string): string {
   return createHash('sha256').update(secret).digest('hex');
 }
 
+/**
+ * Stored agent info originates from the MCP client, so it is never trusted to be valid JSON:
+ * a database column which truncated an oversized value would otherwise break every next
+ * request made with the auth secret, including the page used to revoke it.
+ */
+function parseStoredClient(value: unknown): McpClientInfo | null {
+  if (typeof value !== 'string' || !value) return null;
+  let parsed: any;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || typeof parsed.client !== 'string') return null;
+  return { client: parsed.client, ver: typeof parsed.ver === 'string' ? parsed.ver : null };
+}
+
 export class McpAuthSecretStore {
   private readonly resource: AdminForthResource;
 
@@ -52,9 +69,7 @@ export class McpAuthSecretStore {
       name: record[fields.nameField],
       createdAt: record[fields.createdAtField],
       lastUsedAt: record[fields.lastUsedAtField] ?? null,
-      lastUsedByAgent: record[fields.lastUsedByAgentField]
-        ? JSON.parse(record[fields.lastUsedByAgentField])
-        : null,
+      lastUsedByAgent: parseStoredClient(record[fields.lastUsedByAgentField]),
     }));
   }
 
@@ -120,9 +135,7 @@ export class McpAuthSecretStore {
         username: dbUser[auth.usernameField],
         dbUser,
       },
-      client: record[fields.lastUsedByAgentField]
-        ? JSON.parse(record[fields.lastUsedByAgentField])
-        : null,
+      client: parseStoredClient(record[fields.lastUsedByAgentField]),
       name: record[fields.nameField],
       recordId: record[fields.idField],
     };

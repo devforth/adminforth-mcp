@@ -79,3 +79,37 @@ test('creates, authenticates, tracks, lists, and revokes auth secret records', a
   assert.deepEqual(revoked, { ok: true });
   assert.equal(revokedRecord, authSecretRecords[0]);
 });
+
+test('survives corrupted stored agent info', async () => {
+  // e.g. a database column which silently truncated an oversized value
+  const record = {
+    id: 'secret-1',
+    name: 'Codex',
+    secret_hash: createHash('sha256').update('afmcp_test').digest('hex'),
+    user_id: 'user-1',
+    created_at: '2026-01-01T00:00:00.000Z',
+    last_used_at: null,
+    last_used_by_agent: '{"client":"codex","ver":"1.0',
+  };
+  const userRecord = { id: 'user-1', email: 'owner@example.com' };
+  const adminforth = {
+    config: {
+      auth: { usersResourceId: 'admin_users', usernameField: 'email' },
+      resources: [
+        { resourceId: 'mcp_auth_secrets' },
+        { resourceId: 'admin_users', columns: [{ name: 'id', primaryKey: true }] },
+      ],
+    },
+    resource: (resourceId) => resourceId === 'mcp_auth_secrets'
+      ? { list: async () => [record], get: async () => record }
+      : { get: async () => userRecord },
+  };
+  const store = new McpAuthSecretStore(adminforth, options);
+
+  const authenticated = await store.authenticate('afmcp_test');
+  assert.equal(authenticated.client, null);
+  assert.equal(authenticated.name, 'Codex');
+
+  const listed = await store.list({ pk: 'user-1' });
+  assert.equal(listed[0].lastUsedByAgent, null);
+});

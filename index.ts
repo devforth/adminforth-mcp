@@ -19,6 +19,7 @@ import type { PluginOptions } from './types.js';
 
 const BEARER_SECRET_RE = /^Bearer (afmcp_[A-Za-z0-9_-]+)$/i;
 const MCP_PATH = '/mcp';
+const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie']);
 
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
 
@@ -31,6 +32,16 @@ function requestExtra(input: IAdminForthEndpointHandlerInput): HttpExtra {
     requestUrl: input.requestUrl,
     response: input.response,
   };
+}
+
+/**
+ * The MCP auth secret is a long-lived credential, so it is dropped as soon as it is verified and
+ * never reaches tool handlers, which may log, persist or forward the headers they are given.
+ */
+function withoutCredentials(headers: Record<string, any>): Record<string, any> {
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => !CREDENTIAL_HEADERS.has(name.toLowerCase())),
+  );
 }
 
 function jsonRpcAuthError(id: string | number | null = null) {
@@ -205,7 +216,8 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       return jsonRpcAuthError(input.body.id ?? null);
     }
 
-    const reportedClient = readMcpClient(input.body, input.headers);
+    const toolHeaders = withoutCredentials(input.headers);
+    const reportedClient = readMcpClient(input.body, toolHeaders);
     const client = reportedClient.client === UNKNOWN_CLIENT && authenticated.client
       ? authenticated.client
       : reportedClient;
@@ -218,13 +230,13 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     const protocolResponse = await handleMcpProtocol({
       ...this.serverPresentation,
       body: input.body,
-      headers: input.headers,
+      headers: toolHeaders,
       listTools: () => this.apiTools.list(),
       callTool: (name, arguments_) => this.apiTools.call({
         name,
         arguments: arguments_,
         adminUser,
-        headers: input.headers,
+        headers: toolHeaders,
         requestUrl: input.requestUrl,
         abortSignal: input.abortSignal,
       }),
