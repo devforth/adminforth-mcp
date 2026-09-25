@@ -1,5 +1,7 @@
 import {
+  ActionCheckSource,
   AdminForthPlugin,
+  interpretResource,
   type AdminForthResource,
   type AdminUser,
   type HttpExtra,
@@ -20,6 +22,31 @@ import type { PluginOptions } from './types.js';
 const BEARER_SECRET_RE = /^Bearer (afmcp_[A-Za-z0-9_-]+)$/i;
 const MCP_PATH = '/mcp';
 const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie']);
+
+const RESOURCES_LIST_RESPONSE_SCHEMA = {
+  type: 'object',
+  required: ['resources'],
+  properties: {
+    resources: {
+      type: 'array',
+      description: 'Resources the authenticated admin user can access. A resource is not listed when list, show, create, edit and delete are all forbidden for the user.',
+      items: {
+        type: 'object',
+        required: ['resourceId', 'label'],
+        properties: {
+          resourceId: {
+            type: 'string',
+            description: 'Resource identifier. Pass it as resourceId to get_resource, get_resource_data, aggregate, create_record, update_record, delete_record and other resource tools. Call get_resource with it to get the columns and allowed actions of the resource.',
+          },
+          label: {
+            type: 'string',
+            description: 'Human readable resource name, translated for the current user.',
+          },
+        },
+      },
+    },
+  },
+};
 
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
 
@@ -145,6 +172,33 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   setupEndpoints(server: IHttpServer) {
     server.endpoint({
       method: 'GET',
+      path: '/get_resources_list',
+      description: 'Lists the resourceId and label of every resource (data table) the authenticated admin user can access. Call this first to discover valid resourceId values before using get_resource, get_resource_data, aggregate, create_record, update_record, delete_record or other resource tools.',
+      response_schema: RESOURCES_LIST_RESPONSE_SCHEMA,
+      handler: async ({ adminUser, tr }) => {
+        const resources = await Promise.all(this.adminforth.config.resources.map(async (resource) => {
+          const [{ allowedActions: displayActions }, { allowedActions: listActions }] = await Promise.all([
+            interpretResource(adminUser, resource, {}, ActionCheckSource.DisplayButtons, this.adminforth),
+            interpretResource(adminUser, resource, {}, ActionCheckSource.ListRequest, this.adminforth),
+          ]);
+
+          const { show, create, edit } = displayActions;
+          if (![listActions.list, show, create, edit, displayActions.delete].includes(true)) {
+            return null;
+          }
+
+          return {
+            resourceId: resource.resourceId,
+            label: await tr(resource.label, `resource.${resource.resourceId}`),
+          };
+        }));
+
+        return { resources: resources.filter(Boolean) };
+      },
+    });
+
+    server.endpoint({
+      method: 'GET',
       path: `${MCP_PATH}/auth-secrets`,
       handler: async ({ adminUser }) => ({
         authSecrets: await this.authSecretStore.list(adminUser),
@@ -183,6 +237,17 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       path: MCP_PATH,
       noAuth: true,
       handler: async (input) => this.handleMcpRequest(input),
+    });
+
+    // Streamable HTTP clients open a GET stream for server-initiated messages; 405 tells them this server has none.
+    server.endpoint({
+      method: 'GET',
+      path: MCP_PATH,
+      noAuth: true,
+      handler: async ({ response }) => {
+        response.setHeader('Allow', 'POST');
+        response.setStatus(405, 'Method Not Allowed');
+      },
     });
   }
 
