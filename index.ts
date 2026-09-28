@@ -1,7 +1,5 @@
 import {
-  ActionCheckSource,
   AdminForthPlugin,
-  interpretResource,
   type AdminForthResource,
   type AdminUser,
   type HttpExtra,
@@ -173,27 +171,15 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     server.endpoint({
       method: 'GET',
       path: '/get_resources_list',
-      description: 'Lists the resourceId and label of every resource (data table) the authenticated admin user can access. Call this first to discover valid resourceId values before using get_resource, get_resource_data, aggregate, create_record, update_record, delete_record or other resource tools.',
+      description: 'Lists the resourceId and label of every resource (data table). Call this first to discover valid resourceId values before using get_resource, get_resource_data, aggregate, create_record, update_record, delete_record or other resource tools.',
       response_schema: RESOURCES_LIST_RESPONSE_SCHEMA,
-      handler: async ({ adminUser, tr }) => {
-        const resources = await Promise.all(this.adminforth.config.resources.map(async (resource) => {
-          const [{ allowedActions: displayActions }, { allowedActions: listActions }] = await Promise.all([
-            interpretResource(adminUser, resource, {}, ActionCheckSource.DisplayButtons, this.adminforth),
-            interpretResource(adminUser, resource, {}, ActionCheckSource.ListRequest, this.adminforth),
-          ]);
+      handler: async ({ tr }) => {
+        const resources = await Promise.all(this.adminforth.config.resources.map(async (resource) => ({
+          resourceId: resource.resourceId,
+          label: await tr(resource.label, `resource.${resource.resourceId}`),
+        })));
 
-          const { show, create, edit } = displayActions;
-          if (![listActions.list, show, create, edit, displayActions.delete].includes(true)) {
-            return null;
-          }
-
-          return {
-            resourceId: resource.resourceId,
-            label: await tr(resource.label, `resource.${resource.resourceId}`),
-          };
-        }));
-
-        return { resources: resources.filter(Boolean) };
+        return { resources };
       },
     });
 
