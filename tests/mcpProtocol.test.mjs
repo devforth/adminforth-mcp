@@ -112,6 +112,43 @@ test('supports legacy initialize and tool calls', async () => {
   assert.equal(call.body.result.isError, false);
 });
 
+test('serializes tool output as YAML, dropping values JSON cannot hold', async () => {
+  const call = await handleMcpProtocol({
+    ...serverPresentation,
+    body: {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'get_resource', arguments: { resourceId: 'cars' } },
+    },
+    headers: {},
+    listTools: () => [],
+    callTool: async () => ({
+      output: { resource: { resourceId: 'cars', hook: async () => {}, missing: undefined, columns: [{ name: 'id' }] } },
+      isError: false,
+    }),
+  });
+
+  assert.equal(call.body.result.content[0].text, 'resource:\n  resourceId: cars\n  columns:\n    - name: id\n');
+});
+
+test('passes string tool output as is', async () => {
+  const call = await handleMcpProtocol({
+    ...serverPresentation,
+    body: {
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: 'fetch_skill', arguments: { skillName: 'fetch_data' } },
+    },
+    headers: {},
+    listTools: () => [],
+    callTool: async () => ({ output: '# Fetch data\n', isError: false }),
+  });
+
+  assert.equal(call.body.result.content[0].text, '# Fetch data\n');
+});
+
 test('negotiates the latest legacy version when the requested version is unsupported', async () => {
   const response = await handleMcpProtocol({
     ...serverPresentation,

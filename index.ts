@@ -15,11 +15,16 @@ import {
   type McpServerPresentation,
 } from './mcpProtocol.js';
 import { McpAuthSecretStore } from './authSecretStore.js';
+import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
 import type { PluginOptions } from './types.js';
 
 const BEARER_SECRET_RE = /^Bearer (afmcp_[A-Za-z0-9_-]+)$/i;
 const MCP_PATH = '/mcp';
 const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie']);
+const DEFAULT_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 100;
+const DEFAULT_TOOL_TIMEOUT_MS = 15_000;
+const DEFAULT_TOOL_CALLS_PER_REQUEST = 10;
 
 const RESOURCES_LIST_RESPONSE_SCHEMA = {
   type: 'object',
@@ -82,6 +87,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   pluginsScope: 'global' = 'global';
   private authSecretStore!: McpAuthSecretStore;
   private apiTools!: AdminForthApiTools;
+  private skills!: McpSkills;
   private serverPresentation!: McpServerPresentation;
 
   constructor(options: PluginOptions) {
@@ -131,14 +137,26 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     }
 
     this.authSecretStore = new McpAuthSecretStore(adminforth, this.options.authSecretResource);
+    const pageSize = {
+      default: this.options.pageSize?.default ?? DEFAULT_PAGE_SIZE,
+      max: this.options.pageSize?.max ?? MAX_PAGE_SIZE,
+    };
     this.apiTools = new AdminForthApiTools(
       adminforth,
       new Set([this.options.authSecretResource.resourceId]),
+      pageSize,
+      this.options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
     );
+    this.skills = new McpSkills(this.customFolderPath, {
+      'pageSize.default': pageSize.default,
+      'pageSize.max': pageSize.max,
+      toolCallsPerRequest: this.options.toolCallsPerRequest ?? DEFAULT_TOOL_CALLS_PER_REQUEST,
+    });
     this.serverPresentation = createMcpServerPresentation(
       adminforth.config.customization.brandName,
       this.options.adminPanelOrigin,
       adminforth.config.baseUrl,
+      this.skills.serverInstructions(),
     );
   }
 
@@ -282,15 +300,18 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       ...this.serverPresentation,
       body: input.body,
       headers: toolHeaders,
-      listTools: () => this.apiTools.list(),
-      callTool: (name, arguments_) => this.apiTools.call({
-        name,
-        arguments: arguments_,
-        adminUser,
-        headers: toolHeaders,
-        requestUrl: input.requestUrl,
-        abortSignal: input.abortSignal,
-      }),
+      listTools: () => [...this.apiTools.list(), this.skills.toolDefinition()],
+      callTool: async (name, arguments_) => {
+        if (name === FETCH_SKILL_TOOL_NAME) return this.skills.call(arguments_);
+        return this.apiTools.call({
+          name,
+          arguments: arguments_,
+          adminUser,
+          headers: toolHeaders,
+          requestUrl: input.requestUrl,
+          abortSignal: input.abortSignal,
+        });
+      },
     });
 
     input.response.setStatus(protocolResponse.status);
