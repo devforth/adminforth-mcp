@@ -12,6 +12,7 @@ const options = {
   createdAtField: 'created_at',
   lastUsedAtField: 'last_used_at',
   lastUsedByAgentField: 'last_used_by_agent',
+  readOnlyField: 'read_only',
 };
 
 test('creates, authenticates, tracks, lists, and revokes auth secret records', async () => {
@@ -55,14 +56,16 @@ test('creates, authenticates, tracks, lists, and revokes auth secret records', a
   const adminUser = { pk: 'user-1', username: 'owner@example.com', dbUser: userRecord };
   const store = new McpAuthSecretStore(adminforth, options);
 
-  const created = await store.create('Codex', adminUser, {});
+  const created = await store.create('Codex', true, adminUser, {});
   assert.match(created.secret, /^afmcp_[A-Za-z0-9_-]{43}$/);
   assert.equal(authSecretRecords[0].secret_hash, createHash('sha256').update(created.secret).digest('hex'));
   assert.equal(JSON.stringify(authSecretRecords[0]).includes(created.secret), false);
+  assert.equal(authSecretRecords[0].read_only, true);
 
   const authenticated = await store.authenticate(created.secret);
   assert.equal(authenticated.adminUser.username, 'owner@example.com');
   assert.equal(authenticated.name, 'Codex');
+  assert.equal(authenticated.readOnly, true);
   assert.equal(authenticated.recordId, authSecretRecords[0].id);
 
   store.touch(authenticated.recordId, { client: 'codex', ver: '1.0.0' });
@@ -73,6 +76,7 @@ test('creates, authenticates, tracks, lists, and revokes auth secret records', a
   authSecretRecords[0].last_used_by_agent = updates[0].values.last_used_by_agent;
   const listed = await store.list(adminUser);
   assert.deepEqual(listed[0].lastUsedByAgent, { client: 'codex', ver: '1.0.0' });
+  assert.equal(listed[0].readOnly, true);
   assert.equal('secret_hash' in listed[0], false);
 
   const revoked = await store.revoke(authSecretRecords[0].id, adminUser, {});
@@ -90,6 +94,7 @@ test('survives corrupted stored agent info', async () => {
     created_at: '2026-01-01T00:00:00.000Z',
     last_used_at: null,
     last_used_by_agent: '{"client":"codex","ver":"1.0',
+    read_only: false,
   };
   const userRecord = { id: 'user-1', email: 'owner@example.com' };
   const adminforth = {

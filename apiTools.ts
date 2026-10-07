@@ -15,11 +15,11 @@ export interface McpToolDefinition {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
-  annotations?: { destructiveHint: boolean };
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
 }
 
 function isRegisteredToolSchema(schema: IRegisteredApiSchema): schema is RegisteredToolSchema {
-  return typeof schema.handler === 'function';
+  return typeof schema.handler === 'function' && !schema.agent?.hiddenFromAgents;
 }
 
 function endpointPathToToolName(path: string): string {
@@ -56,21 +56,20 @@ export class AdminForthApiTools {
     private readonly hiddenResourceIds: ReadonlySet<string>,
   ) {}
 
-  private schemas(): Map<string, RegisteredToolSchema> {
+  private schemas(readOnly: boolean): Map<string, RegisteredToolSchema> {
     const schemas = new Map<string, RegisteredToolSchema>();
 
     for (const schema of this.adminforth.openApi.registeredSchemas) {
       if (!isRegisteredToolSchema(schema)) continue;
-      const path = stripAdminApiPrefix(schema.path, this.adminforth);
-      if (path === '/mcp' || path.startsWith('/mcp/')) continue;
-      schemas.set(endpointPathToToolName(path), schema);
+      if (readOnly && !schema.agent?.onlyReadsData) continue;
+      schemas.set(endpointPathToToolName(stripAdminApiPrefix(schema.path, this.adminforth)), schema);
     }
 
     return schemas;
   }
 
-  list(): McpToolDefinition[] {
-    return Array.from(this.schemas().entries())
+  list(readOnly: boolean): McpToolDefinition[] {
+    return Array.from(this.schemas(readOnly).entries())
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([name, schema]) => ({
         name,
@@ -80,7 +79,10 @@ export class AdminForthApiTools {
           properties: {},
           additionalProperties: true,
         },
-        ...(schema.agent?.isDangerous && {
+        ...(schema.agent?.onlyReadsData && {
+          annotations: { readOnlyHint: true },
+        }),
+        ...(schema.agent?.requiresHumanApproval && {
           annotations: { destructiveHint: true },
         }),
       }));
@@ -93,8 +95,9 @@ export class AdminForthApiTools {
     headers: Record<string, any>;
     requestUrl: string;
     abortSignal: AbortSignal;
+    readOnly: boolean;
   }): Promise<{ output: unknown; isError: boolean }> {
-    const schema = this.schemas().get(params.name);
+    const schema = this.schemas(params.readOnly).get(params.name);
     if (!schema) {
       return { output: { error: `Unknown tool: ${params.name}` }, isError: true };
     }

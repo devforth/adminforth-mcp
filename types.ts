@@ -9,12 +9,18 @@ export interface McpAuthSecretResourceOptions {
   createdAtField: string;
   lastUsedAtField: string;
   lastUsedByAgentField: string;
+  readOnlyField: string;
 }
 
 export interface PluginOptions extends PluginsCommonOptions {
   authSecretResource: McpAuthSecretResourceOptions;
   /** Public origin of this AdminForth installation, without the AdminForth baseUrl path. */
   adminPanelOrigin?: string;
+  /**
+   * Expose only endpoints marked with `agent: { onlyReadsData: true }` to every auth secret.
+   * Without it, read-only mode is chosen per auth secret.
+   */
+  readOnly?: boolean;
 }
 
 export interface McpClientInfo {

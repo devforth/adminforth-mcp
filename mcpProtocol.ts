@@ -31,6 +31,7 @@ export function createMcpServerPresentation(
   brandName: string,
   adminPanelOrigin?: string,
   baseUrl = '',
+  readOnly = false,
 ): McpServerPresentation {
   const adminPanelUrl = adminPanelOrigin
     ? new URL(baseUrl || '/', adminPanelOrigin).toString()
@@ -44,7 +45,7 @@ export function createMcpServerPresentation(
       description: `${adminPanel}.`,
       ...(adminPanelUrl && { websiteUrl: adminPanelUrl }),
     },
-    instructions: `This is the ${adminPanel}. Use its tools to read and update data allowed for the authenticated user.`,
+    instructions: `This is the ${adminPanel}. Use its tools to ${readOnly ? 'read' : 'read and update'} data allowed for the authenticated user.`,
   };
 }
 
