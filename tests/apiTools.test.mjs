@@ -89,7 +89,7 @@ test('lists endpoints with handlers as tools, except the MCP endpoints', () => {
 
 test('marks dangerous tools and asks for a confirmation in their description', () => {
   const tools = createTools([
-    { path: '/delete_record', description: 'Deletes a record.', agent: { isDangerous: true }, handler: async () => ({}) },
+    { path: '/delete_record', description: 'Deletes a record.', agent: { requiresHumanApproval: true }, handler: async () => ({}) },
   ]);
 
   const [tool] = tools.list();

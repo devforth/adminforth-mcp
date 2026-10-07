@@ -266,7 +266,7 @@ export class AdminForthApiTools {
     const description = [
       schema.description,
       this.toolOverrides[name]?.descriptionNote,
-      schema.agent?.isDangerous && DANGEROUS_TOOL_NOTE,
+      schema.agent?.requiresHumanApproval && DANGEROUS_TOOL_NOTE,
     ].filter(Boolean).join(' ');
     return description ? { description } : {};
   }
@@ -306,7 +306,7 @@ export class AdminForthApiTools {
           properties: {},
           additionalProperties: true,
         }, this.toolOverrides[name])),
-        ...(schema.agent?.isDangerous && {
+        ...(schema.agent?.requiresHumanApproval && {
           annotations: { destructiveHint: true },
         }),
       }));
