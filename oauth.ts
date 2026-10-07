@@ -63,6 +63,8 @@ interface AuthorizationCode {
 interface AccessToken {
   pk: string;
   grantId: string;
+  // The MCP URL the token is issued for (RFC 8707): installations sharing ADMINFORTH_SECRET reject each other's tokens.
+  aud: string;
 }
 
 interface RefreshToken {
@@ -215,9 +217,10 @@ export class McpOAuth {
     throw new OAuthError('unsupported_grant_type', 'Only authorization_code and refresh_token grants are supported');
   }
 
-  /** Returns the grant an OAuth access token was issued for, or null for an invalid or expired token. */
+  /** Returns the grant an OAuth access token was issued for, or null for an invalid, expired or foreign token. */
   async verifyAccessToken(token: string): Promise<AccessToken | null> {
-    return this.adminforth.auth.verify(token, ACCESS_TOKEN_JWT_TYPE, false);
+    const accessToken: AccessToken | null = await this.adminforth.auth.verify(token, ACCESS_TOKEN_JWT_TYPE, false);
+    return accessToken?.aud === this.mcpUrl ? accessToken : null;
   }
 
   private checkResource(resource: unknown): void {
@@ -279,7 +282,7 @@ export class McpOAuth {
     if (result.error) {
       throw new OAuthError('invalid_grant', result.error);
     }
-    return this.tokenResponse({ pk: code.pk, grantId: code.jti }, refreshToken);
+    return this.tokenResponse(code.pk, code.jti, refreshToken);
   }
 
   private async refreshAccessToken(body: Record<string, unknown>) {
@@ -301,7 +304,7 @@ export class McpOAuth {
     if (!userId) {
       throw new OAuthError('invalid_grant', 'Refresh token was already used or its connection was revoked');
     }
-    return this.tokenResponse({ pk: userId, grantId }, refreshToken);
+    return this.tokenResponse(userId, grantId, refreshToken);
   }
 
   private issueRefreshToken(grantId: string): string {
@@ -309,7 +312,8 @@ export class McpOAuth {
     return this.adminforth.auth.issueJWT(token, REFRESH_TOKEN_JWT_TYPE, REFRESH_TOKEN_TTL);
   }
 
-  private tokenResponse(accessToken: AccessToken, refreshToken: string) {
+  private tokenResponse(pk: string, grantId: string, refreshToken: string) {
+    const accessToken: AccessToken = { pk, grantId, aud: this.mcpUrl };
     return {
       access_token: this.adminforth.auth.issueJWT(accessToken, ACCESS_TOKEN_JWT_TYPE, ACCESS_TOKEN_TTL_SECONDS),
       token_type: 'Bearer',

@@ -24,7 +24,7 @@
         </p>
         <div class="mt-6 flex justify-end gap-2">
           <Button variant="secondary" :disabled="resolving" @click="resolve(false)">{{ $t('Deny') }}</Button>
-          <Button :loader="resolving" :disabled="resolving" @click="resolve(true)">{{ $t('Allow') }}</Button>
+          <Button :loader="resolving" :disabled="resolving || !armed" @click="resolve(true)">{{ $t('Allow') }}</Button>
         </div>
       </template>
       <template v-else-if="error">
@@ -37,11 +37,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { Button, Spinner } from '@/afcl';
 import { useCoreStore } from '@/stores/core';
 import { callAdminForthApi } from '@/utils';
+
+// Long enough to swallow the second click of a double click, too short for a reader to notice.
+const ALLOW_DELAY_MS = 500;
 
 type Authorization = {
   clientName: string;
@@ -63,8 +66,41 @@ const resolving = ref(false);
 // an invisible frame and trick a click on Allow (clickjacking). The consent is never offered inside a frame.
 const framed = window.top !== window.self;
 
+// Double-clickjacking: a page asks for a double click, swaps itself for this one on the first click, and the second
+// click lands on Allow before anyone can read it. Allow is enabled only once the page has been visible and focused
+// for a moment, and disabled again whenever it loses either.
+const armed = ref(false);
+let armTimer: ReturnType<typeof setTimeout> | undefined;
+
+function disarm() {
+  clearTimeout(armTimer);
+  armed.value = false;
+}
+
+function arm() {
+  disarm();
+  if (document.visibilityState === 'visible' && document.hasFocus()) {
+    armTimer = setTimeout(() => { armed.value = true; }, ALLOW_DELAY_MS);
+  }
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') arm();
+  else disarm();
+}
+
+onBeforeUnmount(() => {
+  disarm();
+  window.removeEventListener('focus', arm);
+  window.removeEventListener('blur', disarm);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+});
+
 onMounted(async () => {
   if (framed) return;
+  window.addEventListener('focus', arm);
+  window.addEventListener('blur', disarm);
+  document.addEventListener('visibilitychange', onVisibilityChange);
   const response = await callAdminForthApi({
     method: 'GET',
     path: `/mcp/oauth/authorization?request=${encodeURIComponent(request)}`,
@@ -73,6 +109,9 @@ onMounted(async () => {
     error.value = response.error_description;
   } else if (response) {
     authorization.value = response;
+    // the delay counts from when the buttons are on the screen
+    await nextTick();
+    arm();
   }
 });
 

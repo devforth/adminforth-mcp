@@ -10,8 +10,10 @@ function addGrant(records, { id = 'grant-1', userId = 'user-1', clientId = CLIEN
   records.push({ id, name: 'Claude Code', secret_hash: `hash-${id}`, user_id: userId, oauth_client_id: clientId });
 }
 
+const MCP_URL = 'https://admin.example/adminapi/v1/mcp';
+
 function accessToken(adminforth, payload) {
-  return `Bearer ${adminforth.auth.issueJWT(payload, 'mcp-oauth-access')}`;
+  return `Bearer ${adminforth.auth.issueJWT({ aud: MCP_URL, ...payload }, 'mcp-oauth-access')}`;
 }
 
 async function createSecret(endpoints) {
@@ -46,6 +48,8 @@ test('rejects access tokens that do not match a live OAuth grant of their user',
     'grant of another user': accessToken(adminforth, { pk: 'user-2', grantId: 'grant-1' }),
     'personal auth secret record': accessToken(adminforth, { pk: 'user-1', grantId: 'secret-1' }),
     'unknown grant': accessToken(adminforth, { pk: 'user-1', grantId: 'grant-404' }),
+    'token of another MCP server': accessToken(adminforth, { pk: 'user-1', grantId: 'grant-1', aud: 'https://other.example/adminapi/v1/mcp' }),
+    'token without audience': accessToken(adminforth, { pk: 'user-1', grantId: 'grant-1', aud: undefined }),
     'authorization request JWT': `Bearer ${adminforth.auth.issueJWT({ pk: 'user-1', grantId: 'grant-1' }, 'mcp-oauth-request')}`,
     'authorization code JWT': `Bearer ${adminforth.auth.issueJWT({ pk: 'user-1', grantId: 'grant-1' }, 'mcp-oauth-code')}`,
     'admin session JWT': `Bearer ${adminforth.auth.issueJWT({ pk: 'user-1', grantId: 'grant-1' }, 'auth')}`,
@@ -120,6 +124,16 @@ test('without OAuth accepts auth secrets only and answers like before OAuth', as
   assert.notEqual((await callMcp(`Bearer ${secret}`)).status, 401);
   assert.equal(authorizedUsers.length, 1);
   assert.equal('oauth_client_id' in records.at(-1), false);
+});
+
+test('requires https adminPanelOrigin for OAuth except on localhost', () => {
+  for (const origin of ['http://admin.example', 'http://admin.example:3500', 'http://10.0.0.5']) {
+    assert.throws(() => createPlugin({ adminPanelOrigin: origin }), /adminPanelOrigin must use https/, origin);
+  }
+  for (const origin of ['https://admin.example', 'http://localhost:3123', 'http://127.0.0.1:3500', 'http://[::1]:3500']) {
+    assert.doesNotThrow(() => createPlugin({ adminPanelOrigin: origin }), origin);
+  }
+  assert.doesNotThrow(() => createPlugin({ oauth: false, adminPanelOrigin: 'http://admin.example' }));
 });
 
 test('requires adminPanelOrigin when OAuth is enabled', () => {

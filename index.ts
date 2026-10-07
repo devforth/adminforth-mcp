@@ -17,6 +17,7 @@ import {
 } from './mcpProtocol.js';
 import { McpAuthSecretStore, SECRET_PREFIX } from './authSecretStore.js';
 import { CONSENT_PAGE_PATH, McpOAuth } from './oauth.js';
+import { isLoopbackUrl } from './oauthClientMetadata.js';
 import { setupOAuthEndpoints } from './oauthEndpoints.js';
 import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
 import type { PluginOptions } from './types.js';
@@ -175,6 +176,15 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       throw new Error(
         'AdminForthMcpPlugin: adminPanelOrigin is required with authSecretResource.oauthClientIdField, '
         + 'OAuth issuer and MCP resource URLs are built from it',
+      );
+    }
+    // OAuth sends codes and tokens through these endpoints, so they must be served over TLS (RFC 6749 §3.1);
+    // plain http is left for a local admin panel.
+    const origin = new URL(this.urls.adminPanelUrl);
+    if (origin.protocol !== 'https:' && !isLoopbackUrl(origin)) {
+      throw new Error(
+        `AdminForthMcpPlugin: adminPanelOrigin must use https with OAuth sign-in, got "${origin.origin}"; `
+        + 'http is allowed only for localhost and 127.0.0.1',
       );
     }
 
