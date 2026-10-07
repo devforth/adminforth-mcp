@@ -19,15 +19,6 @@ const ROW_HELPER_FIELDS = new Set(['_label', '_clickUrl']);
 // so dangerous tools also require a confirmation in chat.
 const DANGEROUS_TOOL_NOTE = 'This tool changes data. If you have not loaded the mutate_data skill yet, load it with fetch_skill first. Before calling, show the user exactly what will change and wait for their explicit confirmation in chat, even when the client does not ask for approval.';
 
-// Frontend-only parts of the get_resource response that are useless for MCP clients and only waste their context.
-// A `[]` suffix applies the rest of the path to every array item.
-const GET_RESOURCE_FRONTEND_ONLY_PATHS = [
-  'resource.columns[].filterOptions',
-  'resource.columns[].components',
-  'resource.options.actions[].customComponent',
-  'resource.options.pageInjections',
-];
-
 // Column properties needed to read, filter and aggregate records; writes need the detailed response.
 // Non-sortable columns also get sortable: false.
 const GET_RESOURCE_ESSENTIAL_COLUMN_FIELDS = ['name', 'label', 'type', 'enum', 'foreignResource'];
@@ -60,7 +51,9 @@ function createToolOverrides(pageSize: McpPageSize, adminforth: IAdminForth): Re
         },
       },
       project: (output, { detailed }) => (
-        detailed ? omitPaths(output, GET_RESOURCE_FRONTEND_ONLY_PATHS) : essentialResource(output as GetResourceOutput)
+        detailed
+          ? withoutFrontendOnlyFields(output as GetResourceOutput)
+          : essentialResource(output as GetResourceOutput)
       ),
     },
     get_resource_data: {
@@ -110,32 +103,20 @@ function stripAdminApiPrefix(path: string, adminforth: IAdminForth): string {
   return strippedPath.startsWith('/') ? strippedPath : `/${strippedPath}`;
 }
 
-/**
- * Returns a copy of `target` without the value at `pathParts`. Only objects along the path are copied,
- * because handler responses may share nested objects with the AdminForth config.
- */
-function omitPath(target: unknown, pathParts: string[]): unknown {
-  if (!target || typeof target !== 'object') return target;
-
-  const [currentPart, ...rest] = pathParts;
-  const isArrayTraversal = currentPart.endsWith('[]');
-  const key = isArrayTraversal ? currentPart.slice(0, -2) : currentPart;
-  const record = target as Record<string, unknown>;
-  if (!(key in record)) return target;
-
-  const { [key]: value, ...others } = record;
-  if (rest.length === 0) return others;
-
+// Drops frontend-only parts of the get_resource response that are useless for MCP clients and only waste their context.
+// Copies instead of deleting: the response shares nested objects with the AdminForth config.
+function withoutFrontendOnlyFields({ resource }: GetResourceOutput): GetResourceOutput {
+  const { pageInjections, ...options } = resource.options;
   return {
-    ...others,
-    [key]: isArrayTraversal && Array.isArray(value)
-      ? value.map((item) => omitPath(item, rest))
-      : omitPath(value, rest),
+    resource: {
+      ...resource,
+      columns: resource.columns.map(({ filterOptions, components, ...column }) => column),
+      options: {
+        ...options,
+        actions: options.actions?.map(({ customComponent, ...action }) => action),
+      },
+    },
   };
-}
-
-function omitPaths(output: unknown, paths: string[]): unknown {
-  return paths.reduce((result, path) => omitPath(result, path.split('.')), output);
 }
 
 function pickFields<T extends object>(source: T, fields: string[]): Partial<T> {
