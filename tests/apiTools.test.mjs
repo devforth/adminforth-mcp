@@ -305,6 +305,17 @@ test('returns handler errors without projecting them', async () => {
   assert.deepEqual(result, { output: { error: 'Resource not found' }, isError: true });
 });
 
+test('answers a handler that returns nothing with an error', async () => {
+  const tools = createTools([{ path: '/returns_nothing', handler: async () => {} }]);
+
+  const result = await callTool(tools, 'returns_nothing', {});
+
+  assert.deepEqual(result, {
+    output: { error: 'Tool handler completed without returning a response.' },
+    isError: true,
+  });
+});
+
 test('refuses resources hidden from MCP', async () => {
   const { endpoint, calls } = recordingEndpoint('/get_resource_data', { data: [] });
 

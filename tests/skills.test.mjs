@@ -85,8 +85,7 @@ test('loads the bundled instructions and skills with the plugin values', () => {
 test('fits the bundled server instructions into the client limit', () => {
   const { instructions } = createMcpServerPresentation(
     'Northwind Logistics Operations Back Office',
-    'https://operations-admin.northwind-logistics.example.com',
-    '/backoffice/admin',
+    'https://operations-admin.northwind-logistics.example.com/backoffice/admin',
     new McpSkills(PLUGIN_CUSTOM_FOLDER, {
       'pageSize.default': 1000,
       'pageSize.max': 10000,

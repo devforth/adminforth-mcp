@@ -20,9 +20,9 @@ import { CONSENT_PAGE_PATH, McpOAuth } from './oauth.js';
 import { setupOAuthEndpoints } from './oauthEndpoints.js';
 import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
 import type { PluginOptions } from './types.js';
+import { adminApiPrefix, createMcpUrls, MCP_PATH, type McpUrls } from './urls.js';
 
 const BEARER_TOKEN_RE = /^Bearer (\S+)$/i;
-const MCP_PATH = '/mcp';
 const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie']);
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 100;
@@ -35,7 +35,7 @@ const RESOURCES_LIST_RESPONSE_SCHEMA = {
   properties: {
     resources: {
       type: 'array',
-      description: 'Resources the authenticated admin user can access. A resource is not listed when list, show, create, edit and delete are all forbidden for the user.',
+      description: 'Every resource of the admin panel. Access is checked when a resource is used, so the user may still be forbidden to list, show, create, edit or delete records of a listed resource.',
       items: {
         type: 'object',
         required: ['resourceId', 'label'],
@@ -94,6 +94,8 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   private apiTools!: AdminForthApiTools;
   private skills!: McpSkills;
   private serverPresentation!: McpServerPresentation;
+  /** Null without adminPanelOrigin; then the settings page shows the MCP URL of the address it was opened at. */
+  private urls!: McpUrls | null;
 
   constructor(options: PluginOptions) {
     super(options, import.meta.url);
@@ -141,6 +143,9 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       });
     }
 
+    this.urls = this.options.adminPanelOrigin
+      ? createMcpUrls(this.options.adminPanelOrigin, adminforth.config.baseUrl)
+      : null;
     this.authSecretStore = new McpAuthSecretStore(adminforth, this.options.authSecretResource);
     this.oauth = this.options.authSecretResource.oauthClientIdField ? this.createOAuth(adminforth) : null;
     const pageSize = {
@@ -160,15 +165,13 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     });
     this.serverPresentation = createMcpServerPresentation(
       adminforth.config.customization.brandName,
-      this.options.adminPanelOrigin,
-      adminforth.config.baseUrl,
+      this.urls?.adminPanelUrl,
       this.skills.serverInstructions(),
     );
   }
 
   private createOAuth(adminforth: IAdminForth): McpOAuth {
-    const { adminPanelOrigin } = this.options;
-    if (!adminPanelOrigin) {
+    if (!this.urls) {
       throw new Error(
         'AdminForthMcpPlugin: adminPanelOrigin is required with authSecretResource.oauthClientIdField, '
         + 'OAuth issuer and MCP resource URLs are built from it',
@@ -190,7 +193,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     return new McpOAuth(
       adminforth,
       this.authSecretStore,
-      adminPanelOrigin,
+      this.urls,
       isProduction ? [] : this.options.devOAuthClients,
     );
   }
@@ -225,7 +228,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     server.endpoint({
       method: 'GET',
       path: '/get_resources_list',
-      description: 'Lists the resourceId and label of every resource (data table). Call this first to discover valid resourceId values before using get_resource, get_resource_data, aggregate, create_record, update_record, delete_record or other resource tools.',
+      description: 'Lists the resourceId and label of every resource (data table), including resources the user cannot access: access is checked when a resource is used. Call this first to discover valid resourceId values before using get_resource, get_resource_data, aggregate, create_record, update_record, delete_record or other resource tools.',
       response_schema: RESOURCES_LIST_RESPONSE_SCHEMA,
       handler: async ({ tr }) => {
         const resources = await Promise.all(this.adminforth.config.resources.map(async (resource) => ({
@@ -243,6 +246,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       handler: async ({ adminUser }) => ({
         authSecrets: await this.authSecretStore.list(adminUser),
         oauthEnabled: Boolean(this.oauth),
+        mcpUrl: this.urls?.mcpUrl ?? null,
       }),
     });
 
@@ -274,7 +278,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     });
 
     if (this.oauth) {
-      setupOAuthEndpoints(server, this.oauth, `${this.adminforth.config.baseUrl}/adminapi/v1`);
+      setupOAuthEndpoints(server, this.oauth, adminApiPrefix(this.adminforth.config.baseUrl));
     }
 
     server.endpoint({

@@ -86,7 +86,7 @@ test('accepts personal auth secrets with OAuth enabled', async () => {
 
 test('enables OAuth only with oauthClientIdField', async () => {
   const enabled = createPlugin();
-  const disabled = createPlugin({ oauth: false, adminPanelOrigin: null });
+  const disabled = createPlugin({ oauth: false });
 
   assert.ok(enabled.endpoints.has('GET /mcp/oauth/authorize'));
   assert.ok(enabled.rawRoutes.has('POST /adminapi/v1/mcp/oauth/token'));
@@ -99,6 +99,12 @@ test('enables OAuth only with oauthClientIdField', async () => {
   const list = async ({ endpoints }) => endpoints.get('GET /mcp/auth-secrets').handler({ adminUser: { pk: 'user-1' } });
   assert.equal((await list(enabled)).oauthEnabled, true);
   assert.equal((await list(disabled)).oauthEnabled, false);
+});
+
+test('gives the settings page the MCP URL built from adminPanelOrigin, if configured', async () => {
+  const list = async ({ endpoints }) => endpoints.get('GET /mcp/auth-secrets').handler({ adminUser: { pk: 'user-1' } });
+  assert.equal((await list(createPlugin({ oauth: false }))).mcpUrl, 'https://admin.example/adminapi/v1/mcp');
+  assert.equal((await list(createPlugin({ oauth: false, adminPanelOrigin: null }))).mcpUrl, null);
 });
 
 test('without OAuth accepts auth secrets only and answers like before OAuth', async () => {

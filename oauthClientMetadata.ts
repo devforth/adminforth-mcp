@@ -51,7 +51,7 @@ const lookupPublicAddress: net.LookupFunction = (hostname, options, callback) =>
   });
 };
 
-function isClientIdUrl(clientId: string): boolean {
+export function isClientIdUrl(clientId: string): boolean {
   const url = URL.parse(clientId);
   return url?.protocol === 'https:'
     && url.href === clientId
@@ -63,27 +63,23 @@ function isClientIdUrl(clientId: string): boolean {
     && !url.hostname.startsWith('[');
 }
 
-function isLoopbackUrl(url: URL): boolean {
+export function isLoopbackUrl(url: URL): boolean {
   return url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname);
 }
 
 /** Native clients listen on a random loopback port, so RFC 8252 lets the port differ from the registered one. */
-export function redirectUriMatches(requested: string, registered: string): boolean {
-  const requestedUrl = new URL(requested);
+export function redirectUriMatches(requested: URL, registered: string): boolean {
   const registeredUrl = new URL(registered);
-  if (!isLoopbackUrl(registeredUrl)) return requested === registered;
-  requestedUrl.port = '';
-  registeredUrl.port = '';
-  return requestedUrl.href === registeredUrl.href;
+  if (!isLoopbackUrl(registeredUrl)) return requested.href === registeredUrl.href;
+  return requested.protocol === registeredUrl.protocol
+    && requested.hostname === registeredUrl.hostname
+    && requested.pathname === registeredUrl.pathname
+    && requested.search === registeredUrl.search
+    && requested.hash === registeredUrl.hash;
 }
 
-export function isAllowedRedirectUri(redirectUri: string): boolean {
-  const url = new URL(redirectUri);
-  return url.protocol === 'https:' || isLoopbackUrl(url);
-}
-
-export function isLoopbackRedirectUri(redirectUri: string): boolean {
-  return isLoopbackUrl(new URL(redirectUri));
+export function isAllowedRedirectUri(redirectUri: URL): boolean {
+  return redirectUri.protocol === 'https:' || isLoopbackUrl(redirectUri);
 }
 
 function fetchJson(url: string): Promise<unknown> {
@@ -126,12 +122,11 @@ function fetchJson(url: string): Promise<unknown> {
   });
 }
 
-/** Resolves an MCP client by its Client ID Metadata Document, the client_id being the document URL. */
+/**
+ * Resolves an MCP client by its Client ID Metadata Document, the client_id being the document URL
+ * that passed isClientIdUrl.
+ */
 export async function fetchClientMetadata(clientId: string): Promise<McpOAuthClient> {
-  if (!isClientIdUrl(clientId)) {
-    throw new OAuthError('invalid_client', 'client_id must be the https URL of a client metadata document');
-  }
-
   let document: any;
   try {
     document = await fetchJson(clientId);

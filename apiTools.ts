@@ -1,5 +1,6 @@
 import { compactInputSchema } from './inputSchema.js';
 import type { McpPageSize } from './types.js';
+import { adminApiPrefix, MCP_PATH } from './urls.js';
 import { AdminForthDataTypes } from 'adminforth';
 import type {
   AdminForthResourceFrontend,
@@ -97,8 +98,7 @@ function endpointPathToToolName(path: string): string {
 }
 
 function stripAdminApiPrefix(path: string, adminforth: IAdminForth): string {
-  const baseUrl = (adminforth.config.baseUrl ?? '').replace(/\/$/, '');
-  const apiPrefix = `${baseUrl}/adminapi/v1`;
+  const apiPrefix = adminApiPrefix(adminforth.config.baseUrl);
   const strippedPath = path.startsWith(apiPrefix) ? path.slice(apiPrefix.length) : path;
   return strippedPath.startsWith('/') ? strippedPath : `/${strippedPath}`;
 }
@@ -255,7 +255,7 @@ export class AdminForthApiTools {
     for (const schema of this.adminforth.openApi.registeredSchemas) {
       if (!isRegisteredToolSchema(schema)) continue;
       const path = stripAdminApiPrefix(schema.path, this.adminforth);
-      if (path === '/mcp' || path.startsWith('/mcp/')) continue;
+      if (path === MCP_PATH || path.startsWith(`${MCP_PATH}/`)) continue;
       schemas.set(endpointPathToToolName(path), schema);
     }
 

@@ -1,9 +1,9 @@
 import { logger, type IAdminForthEndpointHandlerInput, type IHttpServer } from 'adminforth';
 import { OAUTH_PATHS, type McpOAuth } from './oauth.js';
 import { OAuthError } from './oauthError.js';
+import { MCP_PATH } from './urls.js';
 
 const MAX_FORM_BODY_BYTES = 16 * 1024;
-const MCP_PATH = '/mcp';
 
 interface RawRequest extends AsyncIterable<Buffer> {
   body?: unknown;

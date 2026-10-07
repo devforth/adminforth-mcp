@@ -34,8 +34,9 @@ export interface PluginOptions extends PluginsCommonOptions {
   authSecretResource: McpAuthSecretResourceOptions;
   /**
    * Public origin of this AdminForth installation, without the AdminForth baseUrl path, e.g. https://example.com.
-   * Required with OAuth sign-in: OAuth issuer and MCP resource URLs are built from it, so it must be the origin
-   * MCP clients connect to.
+   * The MCP server URL shown on the settings page, the OAuth issuer and resource URLs are built from it, so it must
+   * be the origin MCP clients connect to. Required with OAuth sign-in; without it the settings page shows the MCP URL
+   * of the address it was opened at.
    */
   adminPanelOrigin?: string;
   /**

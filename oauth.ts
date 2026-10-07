@@ -4,40 +4,51 @@ import type { McpAuthSecretStore } from './authSecretStore.js';
 import {
   fetchClientMetadata,
   isAllowedRedirectUri,
-  isLoopbackRedirectUri,
+  isClientIdUrl,
+  isLoopbackUrl,
   redirectUriMatches,
 } from './oauthClientMetadata.js';
 import { OAuthError } from './oauthError.js';
 import type { McpOAuthClient } from './types.js';
+import { MCP_PATH, type McpUrls } from './urls.js';
 
 const REQUEST_JWT_TYPE = 'mcp-oauth-request';
 const CODE_JWT_TYPE = 'mcp-oauth-code';
 const ACCESS_TOKEN_JWT_TYPE = 'mcp-oauth-access';
+const REFRESH_TOKEN_JWT_TYPE = 'mcp-oauth-refresh';
 const REQUEST_TTL = '10m';
 const CODE_TTL = '5m';
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
+// Every refresh issues a new token, so a connection expires only after this long without use.
+const REFRESH_TOKEN_TTL = '7d';
+const CLIENT_METADATA_TTL_MS = 10 * 60 * 1000;
 
 /** Endpoint paths relative to the AdminForth API prefix (`<baseUrl>/adminapi/v1`). */
 export const OAUTH_PATHS = {
-  protectedResourceMetadata: '/mcp/oauth-protected-resource',
+  protectedResourceMetadata: `${MCP_PATH}/oauth-protected-resource`,
   // Clients derive authorization server metadata URL from the issuer; for an issuer with a path, the
   // OpenID Connect Discovery form `<issuer>/.well-known/openid-configuration` is the only one not at the host root,
   // so it works behind a proxy that forwards only the AdminForth path. The host-root forms are in oauthEndpoints.ts.
-  authorizationServerMetadata: '/mcp/.well-known/openid-configuration',
-  jwks: '/mcp/oauth/jwks',
-  authorize: '/mcp/oauth/authorize',
-  token: '/mcp/oauth/token',
-  authorization: '/mcp/oauth/authorization',
+  authorizationServerMetadata: `${MCP_PATH}/.well-known/openid-configuration`,
+  jwks: `${MCP_PATH}/oauth/jwks`,
+  authorize: `${MCP_PATH}/oauth/authorize`,
+  token: `${MCP_PATH}/oauth/token`,
+  authorization: `${MCP_PATH}/oauth/authorization`,
 };
 export const CONSENT_PAGE_PATH = '/mcp-authorize';
 
 interface AuthorizationRequest {
   clientId: string;
-  clientName: string;
   redirectUri: string;
   codeChallenge: string;
   state?: string;
-  loopbackRedirect: boolean;
+}
+
+/** An authorization request checked against the client metadata, once the signed-in user opened the consent page. */
+interface VerifiedAuthorizationRequest {
+  request: AuthorizationRequest;
+  client: McpOAuthClient;
+  redirectUrl: URL;
 }
 
 interface AuthorizationCode {
@@ -52,6 +63,12 @@ interface AuthorizationCode {
 interface AccessToken {
   pk: string;
   grantId: string;
+}
+
+interface RefreshToken {
+  grantId: string;
+  // Makes every rotated token differ, even two issued for one grant within the same second.
+  nonce: string;
 }
 
 function requireParams<K extends string>(params: Record<string, unknown>, names: K[]): Record<K, string> {
@@ -78,21 +95,21 @@ export class McpOAuth {
   private readonly apiUrl: string;
   private readonly consentPageUrl: string;
   private readonly configuredClients: Map<string, McpOAuthClient>;
+  private readonly fetchedClients = new Map<string, { client: McpOAuthClient; expiresAt: number }>();
 
   /** `configuredClients` are trusted as is, without fetching their client metadata documents. */
   constructor(
     private readonly adminforth: IAdminForth,
     private readonly store: McpAuthSecretStore,
-    adminPanelOrigin: string,
+    urls: McpUrls,
     configuredClients: McpOAuthClient[] = [],
   ) {
     this.configuredClients = new Map(configuredClients.map((client) => [client.clientId, client]));
-    const baseUrl = adminforth.config.baseUrl;
-    this.apiUrl = new URL(`${baseUrl}/adminapi/v1`, adminPanelOrigin).href;
-    this.mcpUrl = `${this.apiUrl}/mcp`;
+    this.apiUrl = urls.apiUrl;
+    this.mcpUrl = urls.mcpUrl;
     this.issuer = this.mcpUrl;
     this.resourceMetadataUrl = `${this.apiUrl}${OAUTH_PATHS.protectedResourceMetadata}`;
-    this.consentPageUrl = new URL(`${baseUrl}${CONSENT_PAGE_PATH}`, adminPanelOrigin).href;
+    this.consentPageUrl = new URL(`${adminforth.config.baseUrl}${CONSENT_PAGE_PATH}`, this.apiUrl).href;
   }
 
   protectedResourceMetadata() {
@@ -122,7 +139,11 @@ export class McpOAuth {
     };
   }
 
-  /** Validates the authorization request and returns the consent page URL to redirect the browser to. */
+  /**
+   * Validates the authorization request and returns the consent page URL to redirect the browser to.
+   * This endpoint needs no sign-in, so the client metadata document is fetched only once the user opens the
+   * consent page: otherwise anyone could make this server send requests to any URL passed as client_id.
+   */
   async authorize(query: Record<string, unknown>): Promise<string> {
     const params = requireParams(query, [
       'response_type', 'client_id', 'redirect_uri', 'code_challenge', 'code_challenge_method',
@@ -134,22 +155,19 @@ export class McpOAuth {
       throw new OAuthError('invalid_request', 'Only code_challenge_method=S256 is supported');
     }
     this.checkResource(query.resource);
-    if (!URL.canParse(params.redirect_uri) || !isAllowedRedirectUri(params.redirect_uri)) {
+    const redirectUrl = URL.parse(params.redirect_uri);
+    if (!redirectUrl || !isAllowedRedirectUri(redirectUrl)) {
       throw new OAuthError('invalid_request', 'redirect_uri must use https unless it points to localhost');
     }
-
-    const client = this.configuredClients.get(params.client_id) ?? await fetchClientMetadata(params.client_id);
-    if (!client.redirectUris.some((registered) => redirectUriMatches(params.redirect_uri, registered))) {
-      throw new OAuthError('invalid_request', 'redirect_uri is not listed in the client metadata document');
+    if (!this.configuredClients.has(params.client_id) && !isClientIdUrl(params.client_id)) {
+      throw new OAuthError('invalid_client', 'client_id must be the https URL of a client metadata document');
     }
 
     const request: AuthorizationRequest = {
-      clientId: client.clientId,
-      clientName: client.clientName,
+      clientId: params.client_id,
       redirectUri: params.redirect_uri,
       codeChallenge: params.code_challenge,
       state: typeof query.state === 'string' ? query.state : undefined,
-      loopbackRedirect: isLoopbackRedirectUri(params.redirect_uri),
     };
     const signedRequest = this.adminforth.auth.issueJWT(request, REQUEST_JWT_TYPE, REQUEST_TTL);
     return `${this.consentPageUrl}?request=${encodeURIComponent(signedRequest)}`;
@@ -157,26 +175,26 @@ export class McpOAuth {
 
   /** What the consent page shows about a pending authorization request. */
   async describeAuthorization(signedRequest: string) {
-    const request = await this.verifyAuthorizationRequest(signedRequest);
+    const { request, client, redirectUrl } = await this.verifyAuthorizationRequest(signedRequest);
     return {
-      clientName: request.clientName,
+      clientName: client.clientName,
       // Null for a configured client whose client_id is not a metadata document URL.
       clientHost: URL.parse(request.clientId)?.host ?? null,
-      redirectHost: new URL(request.redirectUri).host,
-      loopbackRedirect: request.loopbackRedirect,
+      redirectHost: redirectUrl.host,
+      loopbackRedirect: isLoopbackUrl(redirectUrl),
     };
   }
 
   /** Approves or denies a pending authorization request and returns where to send the browser. */
   async resolveAuthorization(signedRequest: string, approved: boolean, adminUser: AdminUser): Promise<string> {
-    const request = await this.verifyAuthorizationRequest(signedRequest);
-    const url = new URL(request.redirectUri);
+    // Denying redirects too, so the redirect_uri is checked against the client metadata either way.
+    const { request, client, redirectUrl: url } = await this.verifyAuthorizationRequest(signedRequest);
     if (approved) {
       const code: AuthorizationCode = {
         jti: randomUUID(),
         pk: adminUser.pk!,
         clientId: request.clientId,
-        clientName: request.clientName,
+        clientName: client.clientName,
         redirectUri: request.redirectUri,
         codeChallenge: request.codeChallenge,
       };
@@ -208,12 +226,32 @@ export class McpOAuth {
     }
   }
 
-  private async verifyAuthorizationRequest(signedRequest: string): Promise<AuthorizationRequest> {
-    const request = await this.adminforth.auth.verify(signedRequest, REQUEST_JWT_TYPE, false);
+  private async verifyAuthorizationRequest(signedRequest: string): Promise<VerifiedAuthorizationRequest> {
+    const request: AuthorizationRequest | null = await this.adminforth.auth.verify(
+      signedRequest, REQUEST_JWT_TYPE, false,
+    );
     if (!request) {
       throw new OAuthError('invalid_request', 'Authorization request is invalid or expired, start connecting again');
     }
-    return request;
+    const client = await this.lookUpClient(request.clientId);
+    const redirectUrl = new URL(request.redirectUri);
+    if (!client.redirectUris.some((registered) => redirectUriMatches(redirectUrl, registered))) {
+      throw new OAuthError('invalid_request', 'redirect_uri is not listed in the client metadata document');
+    }
+    return { request, client, redirectUrl };
+  }
+
+  /** The consent page loads the client to describe it and again to resolve the request, hence the cache. */
+  private async lookUpClient(clientId: string): Promise<McpOAuthClient> {
+    const configured = this.configuredClients.get(clientId);
+    if (configured) return configured;
+
+    const cached = this.fetchedClients.get(clientId);
+    if (cached && cached.expiresAt > Date.now()) return cached.client;
+
+    const client = await fetchClientMetadata(clientId);
+    this.fetchedClients.set(clientId, { client, expiresAt: Date.now() + CLIENT_METADATA_TTL_MS });
+    return client;
   }
 
   private async redeemAuthorizationCode(body: Record<string, unknown>) {
@@ -231,7 +269,7 @@ export class McpOAuth {
       throw new OAuthError('invalid_grant', 'code_verifier does not match the code challenge');
     }
 
-    const refreshToken = randomBytes(32).toString('base64url');
+    const refreshToken = this.issueRefreshToken(code.jti);
     const result = await this.store.createOAuthGrant({
       id: code.jti,
       userId: code.pk,
@@ -248,12 +286,27 @@ export class McpOAuth {
     const params = requireParams(body, ['refresh_token', 'client_id']);
     this.checkResource(body.resource);
 
-    const refreshToken = randomBytes(32).toString('base64url');
-    const grant = await this.store.rotateRefreshToken(params.refresh_token, params.client_id, refreshToken);
-    if (!grant) {
-      throw new OAuthError('invalid_grant', 'Refresh token is invalid or was already used');
+    // The signature tells a token this server issued from a made-up one: a made-up token knowing a grant id must
+    // not revoke that grant, and anonymous callers must not reach the store or its lock.
+    const presented: RefreshToken | null = await this.adminforth.auth.verify(
+      params.refresh_token, REFRESH_TOKEN_JWT_TYPE, false,
+    );
+    if (!presented) {
+      throw new OAuthError('invalid_grant', 'Refresh token is invalid or expired');
     }
-    return this.tokenResponse({ pk: grant.userId, grantId: grant.grantId }, refreshToken);
+
+    const { grantId } = presented;
+    const refreshToken = this.issueRefreshToken(grantId);
+    const userId = await this.store.rotateRefreshToken(grantId, params.refresh_token, params.client_id, refreshToken);
+    if (!userId) {
+      throw new OAuthError('invalid_grant', 'Refresh token was already used or its connection was revoked');
+    }
+    return this.tokenResponse({ pk: userId, grantId }, refreshToken);
+  }
+
+  private issueRefreshToken(grantId: string): string {
+    const token: RefreshToken = { grantId, nonce: randomBytes(16).toString('base64url') };
+    return this.adminforth.auth.issueJWT(token, REFRESH_TOKEN_JWT_TYPE, REFRESH_TOKEN_TTL);
   }
 
   private tokenResponse(accessToken: AccessToken, refreshToken: string) {

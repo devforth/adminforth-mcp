@@ -133,6 +133,9 @@ const brandName = computed<string>(() => coreStore.config?.brandName);
 const activeClient = ref<Client>('Claude Code');
 // Without OAuth sign-in the agents connect only with auth secrets, so the dialog is the Other tab alone.
 const oauthEnabled = ref(false);
+// Built by the plugin from adminPanelOrigin: OAuth accepts tokens only for this exact URL. Without adminPanelOrigin
+// there is no OAuth and auth secrets do not check the URL, so the address this page was opened at is shown.
+const mcpUrl = ref('');
 
 const authSecrets = ref<AuthSecret[]>([]);
 const loading = ref(true);
@@ -183,10 +186,10 @@ const dialogButtons = computed(() => {
   ];
 });
 
-const mcpUrl = computed(() => {
+function fallbackMcpUrl() {
   const baseUrl = (import.meta.env.VITE_ADMINFORTH_PUBLIC_PATH || '').replace(/\/$/, '');
   return `${window.location.origin}${baseUrl}/adminapi/v1/mcp`;
-});
+}
 // Name the MCP server is registered under in the agent, e.g. `claude mcp add ... my-admin <url>`.
 // A brand name of non-Latin letters only leaves an empty slug, hence the default.
 const serverName = computed(() => brandName.value
@@ -238,6 +241,7 @@ async function loadAuthSecrets() {
       authSecrets.value = response.authSecrets;
       if (!response.oauthEnabled) activeClient.value = 'Other';
       oauthEnabled.value = response.oauthEnabled;
+      mcpUrl.value = response.mcpUrl ?? fallbackMcpUrl();
     }
   } finally {
     loading.value = false;

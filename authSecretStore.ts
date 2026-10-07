@@ -9,6 +9,7 @@ import {
   type IAdminForth,
 } from 'adminforth';
 import { UNKNOWN_CLIENT } from './clientInfo.js';
+import { KeyedLock } from './keyedLock.js';
 import type { McpAuthSecretResourceOptions, McpClientInfo } from './types.js';
 
 export const SECRET_PREFIX = 'afmcp_';
@@ -52,6 +53,7 @@ function parseStoredClient(value: unknown): McpClientInfo | null {
 
 export class McpAuthSecretStore {
   private readonly resource: AdminForthResource;
+  private readonly refreshLock = new KeyedLock();
 
   constructor(
     private readonly adminforth: IAdminForth,
@@ -160,22 +162,37 @@ export class McpAuthSecretStore {
     return result.error ? { error: result.error } : {};
   }
 
-  /** Swaps a refresh token for a new one, so a leaked refresh token stops working after its next use. */
+  /**
+   * Swaps the refresh token of a grant for a new one and returns the grant user id. The caller has verified the
+   * token signature, so a token that is not the current one was issued for this grant before and is used again:
+   * two parties hold it, a client and whoever stole it, and which one is the attacker is unknown, so the whole
+   * grant is revoked (OAuth 2.1 refresh token rotation). The lock keeps two concurrent refreshes with one token
+   * from both passing, within this process.
+   */
   async rotateRefreshToken(
+    grantId: string,
     refreshToken: string,
     clientId: string,
     newRefreshToken: string,
-  ): Promise<{ grantId: string; userId: string } | null> {
+  ): Promise<string | null> {
     const fields = this.options;
     const resource = this.adminforth.resource(fields.resourceId);
-    const record = await resource.get(Filters.AND(
-      Filters.EQ(fields.secretHashField, hashSecret(refreshToken)),
-      Filters.EQ(this.oauthClientIdField, clientId),
-    ));
-    if (!record) return null;
+    return this.refreshLock.run(grantId, async () => {
+      const record = await resource.get(Filters.AND(
+        Filters.EQ(fields.idField, grantId),
+        Filters.EQ(this.oauthClientIdField, clientId),
+      ));
+      if (!record) return null;
 
-    await resource.update(record[fields.idField], { [fields.secretHashField]: hashSecret(newRefreshToken) });
-    return { grantId: record[fields.idField], userId: record[fields.userIdField] };
+      if (record[fields.secretHashField] !== hashSecret(refreshToken)) {
+        logger.warn(`AdminForthMcpPlugin: a rotated refresh token of OAuth grant ${grantId} was used again, revoking the grant`);
+        await resource.delete(grantId);
+        return null;
+      }
+
+      await resource.update(grantId, { [fields.secretHashField]: hashSecret(newRefreshToken) });
+      return record[fields.userIdField];
+    });
   }
 
   /** Access tokens are checked against their grant on every request, so revoking the grant applies at once. */

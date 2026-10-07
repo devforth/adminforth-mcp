@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import https from 'node:https';
 import { McpAuthSecretStore } from '../dist/authSecretStore.js';
 import { McpOAuth } from '../dist/oauth.js';
 import { fetchClientMetadata, isSpecialPurposeAddress, redirectUriMatches } from '../dist/oauthClientMetadata.js';
+import { createMcpUrls } from '../dist/urls.js';
 
 const options = {
   resourceId: 'mcp_auth_secrets',
@@ -27,12 +29,14 @@ function matches(record, filter) {
 }
 
 const DEV_CLIENT = { clientId: 'local-test', clientName: 'Local test', redirectUris: ['http://127.0.0.1/callback'] };
+const CLAUDE_CLIENT = { clientId: CLIENT_ID, clientName: 'Claude Code', redirectUris: ['http://127.0.0.1/callback'] };
 
 function setup() {
   const records = [];
   const users = { 'user-1': { id: 'user-1', email: 'owner@example.com' } };
   const userRecord = users['user-1'];
   const jwtSecrets = new Map();
+  const db = { inFlight: 0, maxInFlight: 0 };
   const adminforth = {
     config: {
       baseUrl: '/admin',
@@ -55,8 +59,19 @@ function setup() {
     },
     resource: (resourceId) => resourceId === 'mcp_auth_secrets'
       ? {
-        get: async (filter) => records.find((record) => matches(record, filter)) ?? null,
+        // Like a database query: the row is read when the query starts and returned a tick later, so concurrent
+        // requests interleave and a request does not see an update made after its read.
+        get: async (filter) => {
+          const record = records.find((candidate) => matches(candidate, filter));
+          const row = record ? { ...record } : null;
+          db.inFlight += 1;
+          db.maxInFlight = Math.max(db.maxInFlight, db.inFlight);
+          await new Promise((resolve) => setImmediate(resolve));
+          db.inFlight -= 1;
+          return row;
+        },
         update: async (id, values) => Object.assign(records.find((record) => record.id === id), values),
+        delete: async (id) => records.splice(records.findIndex((record) => record.id === id), 1),
       }
       : { get: async (filter) => users[filter.value] ?? null },
     createResourceRecord: async ({ record }) => {
@@ -65,17 +80,15 @@ function setup() {
     },
   };
   const store = new McpAuthSecretStore(adminforth, options);
-  const oauth = new McpOAuth(adminforth, store, 'https://admin.example', [DEV_CLIENT]);
+  const oauth = new McpOAuth(adminforth, store, createMcpUrls('https://admin.example', '/admin'), [DEV_CLIENT, CLAUDE_CLIENT]);
   const adminUser = { pk: 'user-1', username: 'owner@example.com', dbUser: userRecord };
   const signedRequest = adminforth.auth.issueJWT({
     clientId: CLIENT_ID,
-    clientName: 'Claude Code',
     redirectUri: REDIRECT_URI,
     codeChallenge: CODE_CHALLENGE,
     state: 'state-1',
-    loopbackRedirect: true,
   }, 'mcp-oauth-request');
-  return { records, store, oauth, adminUser, signedRequest, jwtSecrets, users };
+  return { records, store, oauth, adminUser, signedRequest, jwtSecrets, users, db };
 }
 
 async function approve(oauth, signedRequest, adminUser) {
@@ -185,11 +198,13 @@ test('rejects unsupported grants and foreign resources', async () => {
 });
 
 test('matches loopback redirect URIs on any port and others exactly', () => {
-  assert.equal(redirectUriMatches('http://127.0.0.1:51234/callback', 'http://127.0.0.1/callback'), true);
-  assert.equal(redirectUriMatches('http://localhost:9999/callback', 'http://localhost:3000/callback'), true);
-  assert.equal(redirectUriMatches('http://127.0.0.1:51234/other', 'http://127.0.0.1/callback'), false);
-  assert.equal(redirectUriMatches('https://app.example/callback', 'https://app.example/callback'), true);
-  assert.equal(redirectUriMatches('https://app.example:8443/callback', 'https://app.example/callback'), false);
+  const matches = (requested, registered) => redirectUriMatches(new URL(requested), registered);
+  assert.equal(matches('http://127.0.0.1:51234/callback', 'http://127.0.0.1/callback'), true);
+  assert.equal(matches('http://localhost:9999/callback', 'http://localhost:3000/callback'), true);
+  assert.equal(matches('http://127.0.0.1:51234/other', 'http://127.0.0.1/callback'), false);
+  assert.equal(matches('http://localhost:9999/callback', 'http://127.0.0.1/callback'), false);
+  assert.equal(matches('https://app.example/callback', 'https://app.example/callback'), true);
+  assert.equal(matches('https://app.example:8443/callback', 'https://app.example/callback'), false);
 });
 
 test('authorizes a configured client without fetching its metadata document', async () => {
@@ -206,19 +221,34 @@ test('authorizes a configured client without fetching its metadata document', as
   const consentPageUrl = new URL(await oauth.authorize(authorizeQuery));
   assert.equal(consentPageUrl.origin + consentPageUrl.pathname, 'https://admin.example/admin/mcp-authorize');
   const request = jwtSecrets.get(consentPageUrl.searchParams.get('request'));
-  assert.equal(request.clientName, 'Local test');
   assert.equal(request.redirectUri, 'http://127.0.0.1:5555/callback');
-  assert.equal(request.loopbackRedirect, true);
-  assert.equal((await oauth.describeAuthorization(consentPageUrl.searchParams.get('request'))).clientHost, null);
+  assert.deepEqual(await oauth.describeAuthorization(consentPageUrl.searchParams.get('request')), {
+    clientName: 'Local test',
+    clientHost: null,
+    redirectHost: '127.0.0.1:5555',
+    loopbackRedirect: true,
+  });
 
-  await assert.rejects(
-    oauth.authorize({ ...authorizeQuery, redirect_uri: 'http://127.0.0.1:5555/other' }),
-    { code: 'invalid_request' },
-  );
   await assert.rejects(
     oauth.authorize({ ...authorizeQuery, client_id: 'http://localhost/client.json' }),
     { code: 'invalid_client' },
   );
+});
+
+test('checks redirect_uri against the client metadata on the consent page, before allowing or denying', async () => {
+  const { oauth, adminUser } = setup();
+  const consentPageUrl = new URL(await oauth.authorize({
+    response_type: 'code',
+    client_id: 'local-test',
+    redirect_uri: 'https://attacker.example/callback',
+    code_challenge: CODE_CHALLENGE,
+    code_challenge_method: 'S256',
+  }));
+  const signedRequest = consentPageUrl.searchParams.get('request');
+
+  await assert.rejects(oauth.describeAuthorization(signedRequest), { code: 'invalid_request' });
+  await assert.rejects(oauth.resolveAuthorization(signedRequest, true, adminUser), { code: 'invalid_request' });
+  await assert.rejects(oauth.resolveAuthorization(signedRequest, false, adminUser), { code: 'invalid_request' });
 });
 
 test('treats IPv4-mapped IPv6 addresses like the IPv4 addresses they connect to', () => {
@@ -266,6 +296,7 @@ test('rejects malformed authorization requests before looking up the client', as
 });
 
 test('accepts only canonical https URLs without credentials as client_id documents', async () => {
+  const { oauth } = setup();
   for (const clientId of [
     'https://127.0.0.1/client.json',
     'https://[::1]/client.json',
@@ -277,7 +308,7 @@ test('accepts only canonical https URLs without credentials as client_id documen
     'https://CLIENT.example/client.json',
     'ftp://client.example/client.json',
   ]) {
-    await assert.rejects(fetchClientMetadata(clientId), {
+    await assert.rejects(oauth.authorize({ ...AUTHORIZE_QUERY, client_id: clientId }), {
       code: 'invalid_client',
       message: 'client_id must be the https URL of a client metadata document',
     }, clientId);
@@ -330,4 +361,144 @@ test('returns state and issuer with an approved code', async () => {
   assert.equal(redirect.searchParams.get('iss'), 'https://admin.example/admin/adminapi/v1/mcp');
   assert.ok(redirect.searchParams.get('code'));
   await assert.rejects(oauth.resolveAuthorization('not-a-request', true, adminUser), { code: 'invalid_request' });
+});
+
+async function connect({ records, oauth, adminUser, signedRequest }) {
+  const code = await approve(oauth, signedRequest, adminUser);
+  const tokens = await oauth.exchangeToken({
+    grant_type: 'authorization_code',
+    code,
+    code_verifier: CODE_VERIFIER,
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+  });
+  assert.equal(records.length, 1);
+  return tokens;
+}
+
+const refreshWith = (oauth, refreshToken) => oauth.exchangeToken({
+  grant_type: 'refresh_token',
+  refresh_token: refreshToken,
+  client_id: CLIENT_ID,
+});
+
+async function isGrantAlive(oauth, store, accessToken) {
+  const payload = await oauth.verifyAccessToken(accessToken);
+  return Boolean(await store.authenticateOAuthGrant(payload.grantId, payload.pk));
+}
+
+test('revokes the grant when an attacker refreshes a stolen refresh token before the client does', async () => {
+  const context = setup();
+  const { oauth, store } = context;
+  const stolen = await connect(context);
+
+  const attacker = await refreshWith(oauth, stolen.refresh_token);
+  // The client still holds the refresh token the attacker already rotated.
+  await assert.rejects(refreshWith(oauth, stolen.refresh_token), { code: 'invalid_grant' });
+
+  assert.equal(await isGrantAlive(oauth, store, attacker.access_token), false, 'attacker access token still works');
+  await assert.rejects(refreshWith(oauth, attacker.refresh_token), { code: 'invalid_grant' }, 'attacker can still refresh');
+});
+
+test('revokes the grant when a refresh token the client already rotated is presented again', async () => {
+  const context = setup();
+  const { oauth, store } = context;
+  const stolen = await connect(context);
+
+  const client = await refreshWith(oauth, stolen.refresh_token);
+  await assert.rejects(refreshWith(oauth, stolen.refresh_token), { code: 'invalid_grant' });
+
+  // The server cannot tell which side is the attacker, so the client has to sign in again too.
+  assert.equal(await isGrantAlive(oauth, store, client.access_token), false);
+  await assert.rejects(refreshWith(oauth, client.refresh_token), { code: 'invalid_grant' });
+});
+
+test('does not fetch client metadata documents for requests of signed out callers', async (t) => {
+  const fetchedUrls = [];
+  t.mock.method(https, 'get', (url) => {
+    fetchedUrls.push(url);
+    throw new Error('outgoing request');
+  });
+  const { oauth } = setup();
+
+  // GET /mcp/oauth/authorize is noAuth: anyone can send it with any client_id, e.g. a victim's URL.
+  for (let i = 0; i < 20; i += 1) {
+    await oauth.authorize({ ...AUTHORIZE_QUERY, client_id: `https://victim.example/client-${i}.json` }).catch(() => {});
+  }
+
+  assert.deepEqual(fetchedUrls, []);
+});
+
+test('rejects a made-up refresh token without revoking the grant whose id it names', async (t) => {
+  const context = setup();
+  const { records, oauth, store } = context;
+  const tokens = await connect(context);
+  const rotate = t.mock.method(store, 'rotateRefreshToken');
+
+  // The grant id is no secret: it is the jti of the authorization code and in the access token payload.
+  for (const refreshToken of [`${records[0].id}.made-up`, records[0].id, 'jwt-999']) {
+    await assert.rejects(refreshWith(oauth, refreshToken), { code: 'invalid_grant' }, refreshToken);
+  }
+
+  assert.equal(rotate.mock.callCount(), 0, 'a made-up token reached the store and its lock');
+  assert.equal(await isGrantAlive(oauth, store, tokens.access_token), true);
+  await assert.doesNotReject(refreshWith(oauth, tokens.refresh_token));
+});
+
+async function connectUser({ oauth, users }, userId) {
+  users[userId] = { id: userId, email: `${userId}@example.com` };
+  const adminUser = { pk: userId, username: users[userId].email, dbUser: users[userId] };
+  const consentPageUrl = new URL(await oauth.authorize({ ...AUTHORIZE_QUERY, client_id: CLIENT_ID, redirect_uri: REDIRECT_URI }));
+  const code = await approve(oauth, consentPageUrl.searchParams.get('request'), adminUser);
+  return oauth.exchangeToken({
+    grant_type: 'authorization_code',
+    code,
+    code_verifier: CODE_VERIFIER,
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+  });
+}
+
+test('refreshes connections of different users at once, each for its own user and grant', async () => {
+  const context = setup();
+  const { records, oauth, store, db } = context;
+  const userIds = ['user-a', 'user-b', 'user-c', 'user-d', 'user-e'];
+  const connected = await Promise.all(userIds.map((userId) => connectUser(context, userId)));
+  assert.equal(records.length, userIds.length);
+  db.maxInFlight = 0;
+
+  const refreshed = await Promise.all(connected.map((tokens) => refreshWith(oauth, tokens.refresh_token)));
+
+  // The lock is per grant: refreshes of different grants do not queue behind each other.
+  assert.equal(db.maxInFlight, userIds.length);
+  for (const [index, userId] of userIds.entries()) {
+    const accessToken = await oauth.verifyAccessToken(refreshed[index].access_token);
+    assert.equal(accessToken.pk, userId);
+    assert.equal(accessToken.grantId, (await oauth.verifyAccessToken(connected[index].access_token)).grantId);
+    assert.equal((await store.authenticateOAuthGrant(accessToken.grantId, accessToken.pk)).adminUser.pk, userId);
+  }
+});
+
+test('revokes only the connection whose refresh token is sent twice at once, while other users refresh', async () => {
+  const context = setup();
+  const { records, oauth, store } = context;
+  const [reused, ...others] = await Promise.all(['user-a', 'user-b', 'user-c'].map((userId) => connectUser(context, userId)));
+
+  const [first, second, ...othersResults] = await Promise.allSettled([
+    refreshWith(oauth, reused.refresh_token),
+    refreshWith(oauth, reused.refresh_token),
+    ...others.map((tokens) => refreshWith(oauth, tokens.refresh_token)),
+  ]);
+
+  assert.deepEqual([first.status, second.status].sort(), ['fulfilled', 'rejected']);
+  const rotated = first.status === 'fulfilled' ? first.value : second.value;
+  assert.equal(await isGrantAlive(oauth, store, rotated.access_token), false);
+  await assert.rejects(refreshWith(oauth, rotated.refresh_token), { code: 'invalid_grant' });
+
+  assert.equal(records.length, others.length);
+  for (const result of othersResults) {
+    assert.equal(result.status, 'fulfilled');
+    assert.equal(await isGrantAlive(oauth, store, result.value.access_token), true);
+    await assert.doesNotReject(refreshWith(oauth, result.value.refresh_token));
+  }
 });

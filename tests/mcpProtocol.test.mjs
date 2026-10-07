@@ -5,11 +5,7 @@ import {
   handleMcpProtocol,
 } from '../dist/mcpProtocol.js';
 
-const serverPresentation = createMcpServerPresentation(
-  'Acme Cars',
-  'https://admin.acme.example',
-  '/backoffice',
-);
+const serverPresentation = createMcpServerPresentation('Acme Cars', 'https://admin.acme.example/backoffice');
 
 const modernMeta = {
   'io.modelcontextprotocol/protocolVersion': '2026-07-28',
@@ -24,6 +20,15 @@ test('identifies an admin panel by brand when no canonical URL is configured', (
   assert.equal(presentation.serverInfo.description, 'AdminForth admin panel for "Internal CRM".');
   assert.equal('websiteUrl' in presentation.serverInfo, false);
   assert.match(presentation.instructions, /AdminForth admin panel for "Internal CRM"/);
+});
+
+test('identifies an admin panel by brand and URL', () => {
+  const presentation = createMcpServerPresentation('Internal CRM', 'https://crm.example/');
+
+  assert.equal(presentation.serverInfo.title, 'Internal CRM Admin Panel');
+  assert.equal(presentation.serverInfo.description, 'AdminForth admin panel for "Internal CRM" at https://crm.example/.');
+  assert.equal(presentation.serverInfo.websiteUrl, 'https://crm.example/');
+  assert.match(presentation.instructions, /AdminForth admin panel for "Internal CRM" at https:\/\/crm.example\//);
 });
 
 test('serves deterministic modern tools/list results', async () => {
@@ -164,4 +169,22 @@ test('negotiates the latest legacy version when the requested version is unsuppo
   });
 
   assert.equal(response.body.result.protocolVersion, '2025-11-25');
+});
+
+test('answers a tool call whose handler returns nothing', async () => {
+  const call = await handleMcpProtocol({
+    ...serverPresentation,
+    body: {
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: { name: 'start_custom_action', arguments: {} },
+    },
+    headers: {},
+    listTools: () => [],
+    callTool: async () => ({ output: undefined, isError: false }),
+  });
+
+  assert.equal(call.body.result.isError, false);
+  assert.equal(call.body.result.content[0].text, 'null\n');
 });

@@ -30,13 +30,9 @@ export interface McpServerPresentation {
 
 export function createMcpServerPresentation(
   brandName: string,
-  adminPanelOrigin?: string,
-  baseUrl = '',
+  adminPanelUrl?: string,
   guidance = '',
 ): McpServerPresentation {
-  const adminPanelUrl = adminPanelOrigin
-    ? new URL(baseUrl || '/', adminPanelOrigin).toString()
-    : undefined;
   const adminPanel = `AdminForth admin panel for "${brandName}"${adminPanelUrl ? ` at ${adminPanelUrl}` : ''}`;
   return {
     serverInfo: {
@@ -138,7 +134,7 @@ function validateModernHeaders(
 
 // The JSON round trip drops functions and undefined values that handler responses may carry, which YAML cannot serialize.
 function serializeToolOutput(output: unknown): string {
-  return typeof output === 'string' ? output : YAML.stringify(JSON.parse(JSON.stringify(output)));
+  return typeof output === 'string' ? output : YAML.stringify(JSON.parse(JSON.stringify(output ?? null)));
 }
 
 export async function handleMcpProtocol(
