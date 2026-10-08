@@ -78,6 +78,9 @@ test('creates, authenticates, tracks, lists, and revokes auth secret records', a
   assert.deepEqual(listed[0].lastUsedByAgent, { client: 'codex', ver: '1.0.0' });
   assert.equal(listed[0].readOnly, true);
   assert.equal('secret_hash' in listed[0], false);
+  // Without oauthClientIdField the plugin keeps the 1.0 table layout: no OAuth column is written or read.
+  assert.equal('undefined' in authSecretRecords[0], false);
+  assert.equal(listed[0].oauthClientId, null);
 
   const revoked = await store.revoke(authSecretRecords[0].id, adminUser, {});
   assert.deepEqual(revoked, { ok: true });

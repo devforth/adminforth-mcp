@@ -1,3 +1,4 @@
+import YAML from 'yaml';
 import type { McpToolDefinition } from './apiTools.js';
 
 export const MODERN_PROTOCOL_VERSION = '2026-07-28';
@@ -29,13 +30,10 @@ export interface McpServerPresentation {
 
 export function createMcpServerPresentation(
   brandName: string,
-  adminPanelOrigin?: string,
-  baseUrl = '',
+  adminPanelUrl?: string,
+  guidance = '',
   readOnly = false,
 ): McpServerPresentation {
-  const adminPanelUrl = adminPanelOrigin
-    ? new URL(baseUrl || '/', adminPanelOrigin).toString()
-    : undefined;
   const adminPanel = `AdminForth admin panel for "${brandName}"${adminPanelUrl ? ` at ${adminPanelUrl}` : ''}`;
   return {
     serverInfo: {
@@ -45,7 +43,10 @@ export function createMcpServerPresentation(
       description: `${adminPanel}.`,
       ...(adminPanelUrl && { websiteUrl: adminPanelUrl }),
     },
-    instructions: `This is the ${adminPanel}. Use its tools to ${readOnly ? 'read' : 'read and update'} data allowed for the authenticated user.`,
+    instructions: [
+      `This is the ${adminPanel}. Use its tools to ${readOnly ? 'read' : 'read and update'} data allowed for the authenticated user.`,
+      guidance,
+    ].filter(Boolean).join('\n\n'),
   };
 }
 
@@ -132,8 +133,9 @@ function validateModernHeaders(
   return null;
 }
 
+// The JSON round trip drops functions and undefined values that handler responses may carry, which YAML cannot serialize.
 function serializeToolOutput(output: unknown): string {
-  return typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+  return typeof output === 'string' ? output : YAML.stringify(JSON.parse(JSON.stringify(output ?? null)));
 }
 
 export async function handleMcpProtocol(

@@ -6,16 +6,25 @@ import {
   type IAdminForth,
   type IAdminForthEndpointHandlerInput,
   type IHttpServer,
+  logger,
 } from 'adminforth';
 import { AdminForthApiTools } from './apiTools.js';
 import { formatMcpExecutedBy, readMcpClient, UNKNOWN_CLIENT } from './clientInfo.js';
 import { createMcpServerPresentation, handleMcpProtocol } from './mcpProtocol.js';
-import { McpAuthSecretStore } from './authSecretStore.js';
+import { McpAuthSecretStore, SECRET_PREFIX } from './authSecretStore.js';
+import { CONSENT_PAGE_PATH, McpOAuth } from './oauth.js';
+import { isLoopbackUrl } from './oauthClientMetadata.js';
+import { setupOAuthEndpoints } from './oauthEndpoints.js';
+import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
 import type { PluginOptions } from './types.js';
+import { adminApiPrefix, createMcpUrls, MCP_PATH, type McpUrls } from './urls.js';
 
-const BEARER_SECRET_RE = /^Bearer (afmcp_[A-Za-z0-9_-]+)$/i;
-const MCP_PATH = '/mcp';
+const BEARER_TOKEN_RE = /^Bearer (\S+)$/i;
 const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie']);
+const DEFAULT_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 100;
+const DEFAULT_TOOL_TIMEOUT_MS = 15_000;
+const DEFAULT_TOOL_CALLS_PER_REQUEST = 10;
 
 const RESOURCES_LIST_RESPONSE_SCHEMA = {
   type: 'object',
@@ -23,7 +32,7 @@ const RESOURCES_LIST_RESPONSE_SCHEMA = {
   properties: {
     resources: {
       type: 'array',
-      description: 'Resources the authenticated admin user can access. A resource is not listed when list, show, create, edit and delete are all forbidden for the user.',
+      description: 'Every resource of the admin panel. Access is checked when a resource is used, so the user may still be forbidden to list, show, create, edit or delete records of a listed resource.',
       items: {
         type: 'object',
         required: ['resourceId', 'label'],
@@ -69,7 +78,7 @@ function jsonRpcAuthError(id: string | number | null = null) {
   return {
     jsonrpc: '2.0',
     id,
-    error: { code: -32001, message: 'Invalid or revoked MCP auth secret.' },
+    error: { code: -32001, message: 'Authentication required: the MCP auth secret or OAuth access token is missing, invalid or revoked.' },
   };
 }
 
@@ -77,7 +86,12 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   options: PluginOptions;
   pluginsScope: 'global' = 'global';
   private authSecretStore!: McpAuthSecretStore;
+  /** Null when OAuth sign-in is not configured; then only auth secrets authenticate. */
+  private oauth!: McpOAuth | null;
   private apiTools!: AdminForthApiTools;
+  private skills!: McpSkills;
+  /** Null without adminPanelOrigin; then the settings page shows the MCP URL of the address it was opened at. */
+  private urls!: McpUrls | null;
 
   constructor(options: PluginOptions) {
     super(options, import.meta.url);
@@ -125,10 +139,63 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       });
     }
 
+    this.urls = this.options.adminPanelOrigin
+      ? createMcpUrls(this.options.adminPanelOrigin, adminforth.config.baseUrl)
+      : null;
     this.authSecretStore = new McpAuthSecretStore(adminforth, this.options.authSecretResource);
+    this.oauth = this.options.authSecretResource.oauthClientIdField ? this.createOAuth(adminforth) : null;
+    const pageSize = {
+      default: this.options.pageSize?.default ?? DEFAULT_PAGE_SIZE,
+      max: this.options.pageSize?.max ?? MAX_PAGE_SIZE,
+    };
     this.apiTools = new AdminForthApiTools(
       adminforth,
       new Set([this.options.authSecretResource.resourceId]),
+      pageSize,
+      this.options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
+    );
+    this.skills = new McpSkills(this.customFolderPath, {
+      'pageSize.default': pageSize.default,
+      'pageSize.max': pageSize.max,
+      toolCallsPerRequest: this.options.toolCallsPerRequest ?? DEFAULT_TOOL_CALLS_PER_REQUEST,
+    });
+  }
+
+  private createOAuth(adminforth: IAdminForth): McpOAuth {
+    if (!this.urls) {
+      throw new Error(
+        'AdminForthMcpPlugin: adminPanelOrigin is required with authSecretResource.oauthClientIdField, '
+        + 'OAuth issuer and MCP resource URLs are built from it',
+      );
+    }
+    // OAuth sends codes and tokens through these endpoints, so they must be served over TLS (RFC 6749 §3.1);
+    // plain http is left for a local admin panel.
+    const origin = new URL(this.urls.adminPanelUrl);
+    if (origin.protocol !== 'https:' && !isLoopbackUrl(origin)) {
+      throw new Error(
+        `AdminForthMcpPlugin: adminPanelOrigin must use https with OAuth sign-in, got "${origin.origin}"; `
+        + 'http is allowed only for localhost and 127.0.0.1',
+      );
+    }
+
+    adminforth.config.customization.customPages.push({
+      path: CONSENT_PAGE_PATH,
+      component: {
+        file: this.componentPath('McpAuthorize.vue'),
+        meta: { sidebarAndHeader: 'none' },
+      },
+    });
+
+    const isProduction = process.env.NODE_ENV === 'production';
+    if (isProduction && this.options.devOAuthClients?.length) {
+      logger.warn('AdminForthMcpPlugin: devOAuthClients are ignored because NODE_ENV is "production"');
+    }
+    return new McpOAuth(
+      adminforth,
+      this.authSecretStore,
+      this.urls,
+      isProduction ? [] : this.options.devOAuthClients,
+      this.options.readOnly,
     );
   }
 
@@ -143,6 +210,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       fields.lastUsedAtField,
       fields.lastUsedByAgentField,
       fields.readOnlyField,
+      ...(fields.oauthClientIdField ? [fields.oauthClientIdField] : []),
     ]) {
       if (!resource.columns.some((column) => column.name === fieldName)) {
         throw new Error(
@@ -162,7 +230,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     server.endpoint({
       method: 'GET',
       path: '/get_resources_list',
-      description: 'Lists the resourceId and label of every resource (data table). Call this first to discover valid resourceId values before using get_resource, get_resource_data, aggregate, create_record, update_record, delete_record or other resource tools.',
+      description: 'Lists the resourceId and label of every resource (data table), including resources the user cannot access: access is checked when a resource is used. Call this first to discover valid resourceId values before using get_resource, get_resource_data, aggregate, create_record, update_record, delete_record or other resource tools.',
       agent: {
         onlyReadsData: true,
       },
@@ -185,6 +253,8 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       },
       handler: async ({ adminUser }) => ({
         authSecrets: await this.authSecretStore.list(adminUser),
+        oauthEnabled: Boolean(this.oauth),
+        mcpUrl: this.urls?.mcpUrl ?? null,
         serverReadOnly: this.options.readOnly ?? false,
       }),
     });
@@ -227,6 +297,10 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       },
     });
 
+    if (this.oauth) {
+      setupOAuthEndpoints(server, this.oauth, adminApiPrefix(this.adminforth.config.baseUrl));
+    }
+
     server.endpoint({
       method: 'POST',
       path: MCP_PATH,
@@ -252,6 +326,14 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     });
   }
 
+  /** Accepts personal auth secrets and OAuth access tokens; access tokens are JWTs, secrets have their prefix. */
+  private async authenticate(token: string) {
+    if (token.startsWith(SECRET_PREFIX)) return this.authSecretStore.authenticate(token);
+    if (!this.oauth) return null;
+    const accessToken = await this.oauth.verifyAccessToken(token);
+    return accessToken && this.authSecretStore.authenticateOAuthGrant(accessToken.grantId, accessToken.pk);
+  }
+
   private async handleMcpRequest(input: IAdminForthEndpointHandlerInput) {
     if (input.headers.origin) {
       input.response.setStatus(403);
@@ -262,12 +344,13 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       };
     }
 
-    const bearerMatch = String(input.headers.authorization ?? '').match(BEARER_SECRET_RE);
-    const authenticated = bearerMatch
-      ? await this.authSecretStore.authenticate(bearerMatch[1])
-      : null;
+    const token = String(input.headers.authorization ?? '').match(BEARER_TOKEN_RE)?.[1];
+    const authenticated = token ? await this.authenticate(token) : null;
     if (!authenticated) {
-      input.response.setHeader('WWW-Authenticate', 'Bearer');
+      // resource_metadata leads OAuth clients to the authorization server; invalid_token makes them refresh.
+      input.response.setHeader('WWW-Authenticate', this.oauth
+        ? `Bearer ${token ? 'error="invalid_token", ' : ''}resource_metadata="${this.oauth.resourceMetadataUrl}"`
+        : 'Bearer');
       input.response.setStatus(401);
       return jsonRpcAuthError(input.body.id ?? null);
     }
@@ -297,22 +380,25 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     const protocolResponse = await handleMcpProtocol({
       ...createMcpServerPresentation(
         this.adminforth.config.customization.brandName,
-        this.options.adminPanelOrigin,
-        this.adminforth.config.baseUrl,
+        this.urls?.adminPanelUrl,
+        this.skills.serverInstructions(),
         readOnly,
       ),
       body: input.body,
       headers: toolHeaders,
-      listTools: () => this.apiTools.list(readOnly),
-      callTool: (name, arguments_) => this.apiTools.call({
-        name,
-        arguments: arguments_,
-        adminUser,
-        headers: toolHeaders,
-        requestUrl: input.requestUrl,
-        abortSignal: input.abortSignal,
-        readOnly,
-      }),
+      listTools: () => [...this.apiTools.list(readOnly), this.skills.toolDefinition()],
+      callTool: async (name, arguments_) => {
+        if (name === FETCH_SKILL_TOOL_NAME) return this.skills.call(arguments_);
+        return this.apiTools.call({
+          name,
+          arguments: arguments_,
+          adminUser,
+          headers: toolHeaders,
+          requestUrl: input.requestUrl,
+          abortSignal: input.abortSignal,
+          readOnly,
+        });
+      },
     });
 
     input.response.setStatus(protocolResponse.status);
@@ -324,6 +410,6 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   }
 }
 
-export type { McpAuthSecretResourceOptions, PluginOptions } from './types.js';
+export type { McpAuthSecretResourceOptions, McpOAuthClient, PluginOptions } from './types.js';
 export { canonicalAgentName, formatMcpExecutedBy, readMcpClient } from './clientInfo.js';
 export { handleMcpProtocol } from './mcpProtocol.js';
