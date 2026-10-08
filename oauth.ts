@@ -58,6 +58,7 @@ interface AuthorizationCode {
   clientName: string;
   redirectUri: string;
   codeChallenge: string;
+  readOnly: boolean;
 }
 
 interface AccessToken {
@@ -99,12 +100,16 @@ export class McpOAuth {
   private readonly configuredClients: Map<string, McpOAuthClient>;
   private readonly fetchedClients = new Map<string, { client: McpOAuthClient; expiresAt: number }>();
 
-  /** `configuredClients` are trusted as is, without fetching their client metadata documents. */
+  /**
+   * `configuredClients` are trusted as is, without fetching their client metadata documents. `serverReadOnly` is
+   * the plugin readOnly option: it makes every connection read-only, whatever the user chooses on the consent page.
+   */
   constructor(
     private readonly adminforth: IAdminForth,
     private readonly store: McpAuthSecretStore,
     urls: McpUrls,
     configuredClients: McpOAuthClient[] = [],
+    private readonly serverReadOnly = false,
   ) {
     this.configuredClients = new Map(configuredClients.map((client) => [client.clientId, client]));
     this.apiUrl = urls.apiUrl;
@@ -184,11 +189,20 @@ export class McpOAuth {
       clientHost: URL.parse(request.clientId)?.host ?? null,
       redirectHost: redirectUrl.host,
       loopbackRedirect: isLoopbackUrl(redirectUrl),
+      serverReadOnly: this.serverReadOnly,
     };
   }
 
-  /** Approves or denies a pending authorization request and returns where to send the browser. */
-  async resolveAuthorization(signedRequest: string, approved: boolean, adminUser: AdminUser): Promise<string> {
+  /**
+   * Approves or denies a pending authorization request and returns where to send the browser. `readOnly` is the
+   * choice of the user on the consent page; the connection is read-only with it or with the plugin readOnly option.
+   */
+  async resolveAuthorization(
+    signedRequest: string,
+    approved: boolean,
+    adminUser: AdminUser,
+    readOnly = false,
+  ): Promise<string> {
     // Denying redirects too, so the redirect_uri is checked against the client metadata either way.
     const { request, client, redirectUrl: url } = await this.verifyAuthorizationRequest(signedRequest);
     if (approved) {
@@ -199,6 +213,7 @@ export class McpOAuth {
         clientName: client.clientName,
         redirectUri: request.redirectUri,
         codeChallenge: request.codeChallenge,
+        readOnly: this.serverReadOnly || readOnly,
       };
       url.searchParams.set('code', this.adminforth.auth.issueJWT(code, CODE_JWT_TYPE, CODE_TTL));
     } else {
@@ -278,6 +293,7 @@ export class McpOAuth {
       userId: code.pk,
       clientId: code.clientId,
       clientName: code.clientName,
+      readOnly: code.readOnly,
     }, refreshToken);
     if (result.error) {
       throw new OAuthError('invalid_grant', result.error);

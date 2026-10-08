@@ -14,8 +14,16 @@
         <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
           <b>{{ authorization.clientName }}</b>
           <span v-if="authorization.clientHost"> ({{ authorization.clientHost }})</span>
-          {{ $t('asks to act on your behalf in {brand}: it will see and change everything you can.', { brand: brandName }) }}
+          <template v-if="readOnly">
+            {{ $t('asks to act on your behalf in {brand}: it will see all data you can see, but not change it.', { brand: brandName }) }}
+          </template>
+          <template v-else>
+            {{ $t('asks to act on your behalf in {brand}: it will see and change everything you can.', { brand: brandName }) }}
+          </template>
         </p>
+        <Checkbox v-if="!authorization.serverReadOnly" v-model="readOnlyChosen" class="mt-4">
+          {{ $t('Read only: the agent can only read data') }}
+        </Checkbox>
         <p v-if="authorization.loopbackRedirect" class="mt-3 text-sm font-medium text-amber-700 dark:text-amber-300">
           {{ $t('After you answer, your browser returns to an app running on this computer. Allow only if you have just started connecting {client} yourself.', { client: authorization.clientName }) }}
         </p>
@@ -39,7 +47,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { Button, Spinner } from '@/afcl';
+import { Button, Checkbox, Spinner } from '@/afcl';
 import { useCoreStore } from '@/stores/core';
 import { callAdminForthApi } from '@/utils';
 
@@ -51,6 +59,7 @@ type Authorization = {
   clientHost: string | null;
   redirectHost: string;
   loopbackRedirect: boolean;
+  serverReadOnly: boolean;
 };
 
 const route = useRoute();
@@ -62,6 +71,9 @@ const request = String(route.query.request);
 const authorization = ref<Authorization | null>(null);
 const error = ref('');
 const resolving = ref(false);
+const readOnlyChosen = ref(false);
+// With the plugin readOnly option every connection is read-only, so there is no choice to make.
+const readOnly = computed(() => authorization.value?.serverReadOnly || readOnlyChosen.value);
 // AdminForth sends no frame protection headers, so a site sharing the admin panel domain could load this page in
 // an invisible frame and trick a click on Allow (clickjacking). The consent is never offered inside a frame.
 const framed = window.top !== window.self;
@@ -120,7 +132,7 @@ async function resolve(approved: boolean) {
   const response = await callAdminForthApi({
     method: 'POST',
     path: '/mcp/oauth/authorization',
-    body: { request, approved },
+    body: { request, approved, readOnly: readOnlyChosen.value },
   });
   if (response?.redirectUrl) {
     window.location.href = response.redirectUrl;

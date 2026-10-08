@@ -16,6 +16,7 @@ const options = {
   createdAtField: 'created_at',
   lastUsedAtField: 'last_used_at',
   lastUsedByAgentField: 'last_used_by_agent',
+  readOnlyField: 'read_only',
   oauthClientIdField: 'oauth_client_id',
 };
 const CLIENT_ID = 'https://client.example/oauth/metadata.json';
@@ -31,7 +32,7 @@ function matches(record, filter) {
 const DEV_CLIENT = { clientId: 'local-test', clientName: 'Local test', redirectUris: ['http://127.0.0.1/callback'] };
 const CLAUDE_CLIENT = { clientId: CLIENT_ID, clientName: 'Claude Code', redirectUris: ['http://127.0.0.1/callback'] };
 
-function setup() {
+function setup({ serverReadOnly = false } = {}) {
   const records = [];
   const users = { 'user-1': { id: 'user-1', email: 'owner@example.com' } };
   const userRecord = users['user-1'];
@@ -80,7 +81,7 @@ function setup() {
     },
   };
   const store = new McpAuthSecretStore(adminforth, options);
-  const oauth = new McpOAuth(adminforth, store, createMcpUrls('https://admin.example', '/admin'), [DEV_CLIENT, CLAUDE_CLIENT]);
+  const oauth = new McpOAuth(adminforth, store, createMcpUrls('https://admin.example', '/admin'), [DEV_CLIENT, CLAUDE_CLIENT], serverReadOnly);
   const adminUser = { pk: 'user-1', username: 'owner@example.com', dbUser: userRecord };
   const signedRequest = adminforth.auth.issueJWT({
     clientId: CLIENT_ID,
@@ -116,6 +117,7 @@ test('describes and denies an authorization request', async () => {
     clientHost: 'client.example',
     redirectHost: '127.0.0.1:51234',
     loopbackRedirect: true,
+    serverReadOnly: false,
   });
 
   const redirect = new URL(await oauth.resolveAuthorization(signedRequest, false, adminUser));
@@ -227,6 +229,7 @@ test('authorizes a configured client without fetching its metadata document', as
     clientHost: null,
     redirectHost: '127.0.0.1:5555',
     loopbackRedirect: true,
+    serverReadOnly: false,
   });
 
   await assert.rejects(
@@ -501,4 +504,42 @@ test('revokes only the connection whose refresh token is sent twice at once, whi
     assert.equal(await isGrantAlive(oauth, store, result.value.access_token), true);
     await assert.doesNotReject(refreshWith(oauth, result.value.refresh_token));
   }
+});
+
+async function connectWithAccess(oauth, signedRequest, adminUser, readOnly) {
+  const redirect = new URL(await oauth.resolveAuthorization(signedRequest, true, adminUser, readOnly));
+  return oauth.exchangeToken({
+    grant_type: 'authorization_code',
+    code: redirect.searchParams.get('code'),
+    code_verifier: CODE_VERIFIER,
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+  });
+}
+
+async function connectionOf(oauth, store, tokens) {
+  const { grantId, pk } = await oauth.verifyAccessToken(tokens.access_token);
+  return store.authenticateOAuthGrant(grantId, pk);
+}
+
+test('stores the read-only choice made on the consent page in the connection', async () => {
+  const { records, store, oauth, adminUser, signedRequest } = setup();
+  assert.equal((await oauth.describeAuthorization(signedRequest)).serverReadOnly, false);
+
+  const full = await connectWithAccess(oauth, signedRequest, adminUser, false);
+  const readOnly = await connectWithAccess(oauth, signedRequest, adminUser, true);
+
+  assert.deepEqual(records.map((record) => record.read_only), [false, true]);
+  assert.equal((await connectionOf(oauth, store, full)).readOnly, false);
+  assert.equal((await connectionOf(oauth, store, readOnly)).readOnly, true);
+});
+
+test('makes every OAuth connection read-only with the plugin readOnly option', async () => {
+  const { records, store, oauth, adminUser, signedRequest } = setup({ serverReadOnly: true });
+  assert.equal((await oauth.describeAuthorization(signedRequest)).serverReadOnly, true);
+
+  const tokens = await connectWithAccess(oauth, signedRequest, adminUser, false);
+
+  assert.equal(records[0].read_only, true);
+  assert.equal((await connectionOf(oauth, store, tokens)).readOnly, true);
 });

@@ -9,6 +9,7 @@ export interface McpAuthSecretResourceOptions {
   createdAtField: string;
   lastUsedAtField: string;
   lastUsedByAgentField: string;
+  readOnlyField: string;
   /**
    * Client ID Metadata Document URL of the MCP client connected through OAuth; empty for personal auth secrets.
    * Setting it enables OAuth sign-in, which also needs adminPanelOrigin. Without it only auth secrets work.
@@ -55,6 +56,11 @@ export interface PluginOptions extends PluginsCommonOptions {
    * not a server-side limit.
    */
   toolCallsPerRequest?: number;
+  /**
+   * Expose only endpoints marked with `agent: { onlyReadsData: true }` to every auth secret.
+   * Without it, read-only mode is chosen per auth secret.
+   */
+  readOnly?: boolean;
 }
 
 export interface McpClientInfo {

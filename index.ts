@@ -10,11 +10,7 @@ import {
 } from 'adminforth';
 import { AdminForthApiTools } from './apiTools.js';
 import { formatMcpExecutedBy, readMcpClient, UNKNOWN_CLIENT } from './clientInfo.js';
-import {
-  createMcpServerPresentation,
-  handleMcpProtocol,
-  type McpServerPresentation,
-} from './mcpProtocol.js';
+import { createMcpServerPresentation, handleMcpProtocol } from './mcpProtocol.js';
 import { McpAuthSecretStore, SECRET_PREFIX } from './authSecretStore.js';
 import { CONSENT_PAGE_PATH, McpOAuth } from './oauth.js';
 import { isLoopbackUrl } from './oauthClientMetadata.js';
@@ -94,7 +90,6 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   private oauth!: McpOAuth | null;
   private apiTools!: AdminForthApiTools;
   private skills!: McpSkills;
-  private serverPresentation!: McpServerPresentation;
   /** Null without adminPanelOrigin; then the settings page shows the MCP URL of the address it was opened at. */
   private urls!: McpUrls | null;
 
@@ -164,11 +159,6 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       'pageSize.max': pageSize.max,
       toolCallsPerRequest: this.options.toolCallsPerRequest ?? DEFAULT_TOOL_CALLS_PER_REQUEST,
     });
-    this.serverPresentation = createMcpServerPresentation(
-      adminforth.config.customization.brandName,
-      this.urls?.adminPanelUrl,
-      this.skills.serverInstructions(),
-    );
   }
 
   private createOAuth(adminforth: IAdminForth): McpOAuth {
@@ -205,6 +195,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       this.authSecretStore,
       this.urls,
       isProduction ? [] : this.options.devOAuthClients,
+      this.options.readOnly,
     );
   }
 
@@ -218,6 +209,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       fields.createdAtField,
       fields.lastUsedAtField,
       fields.lastUsedByAgentField,
+      fields.readOnlyField,
       ...(fields.oauthClientIdField ? [fields.oauthClientIdField] : []),
     ]) {
       if (!resource.columns.some((column) => column.name === fieldName)) {
@@ -239,6 +231,9 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       method: 'GET',
       path: '/get_resources_list',
       description: 'Lists the resourceId and label of every resource (data table), including resources the user cannot access: access is checked when a resource is used. Call this first to discover valid resourceId values before using get_resource, get_resource_data, aggregate, create_record, update_record, delete_record or other resource tools.',
+      agent: {
+        onlyReadsData: true,
+      },
       response_schema: RESOURCES_LIST_RESPONSE_SCHEMA,
       handler: async ({ tr }) => {
         const resources = await Promise.all(this.adminforth.config.resources.map(async (resource) => ({
@@ -253,29 +248,44 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     server.endpoint({
       method: 'GET',
       path: `${MCP_PATH}/auth-secrets`,
+      agent: {
+        hiddenFromAgents: true,
+      },
       handler: async ({ adminUser }) => ({
         authSecrets: await this.authSecretStore.list(adminUser),
         oauthEnabled: Boolean(this.oauth),
         mcpUrl: this.urls?.mcpUrl ?? null,
+        serverReadOnly: this.options.readOnly ?? false,
       }),
     });
 
     server.endpoint({
       method: 'POST',
       path: `${MCP_PATH}/auth-secrets`,
+      agent: {
+        hiddenFromAgents: true,
+      },
       handler: async (input) => {
         const name = String(input.body.name ?? '').trim();
         if (!name) {
           input.response.setStatus(400);
           return { error: 'Auth secret name is required' };
         }
-        return this.authSecretStore.create(name, input.adminUser, requestExtra(input));
+        return this.authSecretStore.create(
+          name,
+          this.options.readOnly || input.body.readOnly === true,
+          input.adminUser,
+          requestExtra(input),
+        );
       },
     });
 
     server.endpoint({
       method: 'DELETE',
       path: `${MCP_PATH}/auth-secrets`,
+      agent: {
+        hiddenFromAgents: true,
+      },
       handler: async (input) => {
         const result = await this.authSecretStore.revoke(
           String(input.body.id),
@@ -294,6 +304,9 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     server.endpoint({
       method: 'POST',
       path: MCP_PATH,
+      agent: {
+        hiddenFromAgents: true,
+      },
       noAuth: true,
       handler: async (input) => this.handleMcpRequest(input),
     });
@@ -302,6 +315,9 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     server.endpoint({
       method: 'GET',
       path: MCP_PATH,
+      agent: {
+        hiddenFromAgents: true,
+      },
       noAuth: true,
       handler: async ({ response }) => {
         response.setHeader('Allow', 'POST');
@@ -360,11 +376,17 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       ...authenticated.adminUser,
       executedBy: formatMcpExecutedBy(client, authenticated.name),
     };
+    const readOnly = this.options.readOnly || authenticated.readOnly;
     const protocolResponse = await handleMcpProtocol({
-      ...this.serverPresentation,
+      ...createMcpServerPresentation(
+        this.adminforth.config.customization.brandName,
+        this.urls?.adminPanelUrl,
+        this.skills.serverInstructions(),
+        readOnly,
+      ),
       body: input.body,
       headers: toolHeaders,
-      listTools: () => [...this.apiTools.list(), this.skills.toolDefinition()],
+      listTools: () => [...this.apiTools.list(readOnly), this.skills.toolDefinition()],
       callTool: async (name, arguments_) => {
         if (name === FETCH_SKILL_TOOL_NAME) return this.skills.call(arguments_);
         return this.apiTools.call({
@@ -374,6 +396,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
           headers: toolHeaders,
           requestUrl: input.requestUrl,
           abortSignal: input.abortSignal,
+          readOnly,
         });
       },
     });

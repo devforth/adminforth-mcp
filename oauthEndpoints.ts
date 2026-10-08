@@ -70,6 +70,9 @@ export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPre
   server.endpoint({
     method: 'GET',
     path: OAUTH_PATHS.protectedResourceMetadata,
+    agent: {
+      hiddenFromAgents: true,
+    },
     noAuth: true,
     handler: async () => oauth.protectedResourceMetadata(),
   });
@@ -77,6 +80,9 @@ export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPre
   server.endpoint({
     method: 'GET',
     path: OAUTH_PATHS.authorizationServerMetadata,
+    agent: {
+      hiddenFromAgents: true,
+    },
     noAuth: true,
     handler: async () => oauth.authorizationServerMetadata(),
   });
@@ -84,6 +90,9 @@ export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPre
   server.endpoint({
     method: 'GET',
     path: OAUTH_PATHS.jwks,
+    agent: {
+      hiddenFromAgents: true,
+    },
     noAuth: true,
     handler: async () => ({ keys: [] }),
   });
@@ -91,6 +100,9 @@ export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPre
   server.endpoint({
     method: 'GET',
     path: OAUTH_PATHS.authorize,
+    agent: {
+      hiddenFromAgents: true,
+    },
     noAuth: true,
     handler: async (input) => oauthResponse(input, async () => {
       const consentPageUrl = await oauth.authorize(input.query);
@@ -102,17 +114,24 @@ export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPre
   server.endpoint({
     method: 'GET',
     path: OAUTH_PATHS.authorization,
+    agent: {
+      hiddenFromAgents: true,
+    },
     handler: async (input) => oauthResponse(input, () => oauth.describeAuthorization(String(input.query.request))),
   });
 
   server.endpoint({
     method: 'POST',
     path: OAUTH_PATHS.authorization,
+    agent: {
+      hiddenFromAgents: true,
+    },
     handler: async (input) => oauthResponse(input, async () => ({
       redirectUrl: await oauth.resolveAuthorization(
         String(input.body.request),
         input.body.approved === true,
         input.adminUser,
+        input.body.readOnly === true,
       ),
     })),
   });

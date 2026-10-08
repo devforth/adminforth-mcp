@@ -21,12 +21,14 @@ export interface OAuthGrant {
   userId: string;
   clientId: string;
   clientName: string;
+  readOnly: boolean;
 }
 
 export interface AuthenticatedMcpSecret {
   adminUser: AdminUserWithExecutor;
   client: McpClientInfo | null;
   name: string;
+  readOnly: boolean;
   recordId: string;
 }
 
@@ -79,11 +81,12 @@ export class McpAuthSecretStore {
       createdAt: record[fields.createdAtField],
       lastUsedAt: record[fields.lastUsedAtField] ?? null,
       lastUsedByAgent: parseStoredClient(record[fields.lastUsedByAgentField]),
+      readOnly: record[fields.readOnlyField],
       oauthClientId: fields.oauthClientIdField ? record[fields.oauthClientIdField] ?? null : null,
     }));
   }
 
-  async create(name: string, adminUser: AdminUser, extra: HttpExtra) {
+  async create(name: string, readOnly: boolean, adminUser: AdminUser, extra: HttpExtra) {
     const fields = this.options;
     const secret = `${SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;
     const result = await this.adminforth.createResourceRecord({
@@ -98,6 +101,7 @@ export class McpAuthSecretStore {
         [fields.createdAtField]: new Date().toISOString(),
         [fields.lastUsedAtField]: null,
         [fields.lastUsedByAgentField]: null,
+        [fields.readOnlyField]: readOnly,
         ...(fields.oauthClientIdField && { [fields.oauthClientIdField]: null }),
       },
     });
@@ -156,6 +160,7 @@ export class McpAuthSecretStore {
         [fields.createdAtField]: new Date().toISOString(),
         [fields.lastUsedAtField]: null,
         [fields.lastUsedByAgentField]: null,
+        [fields.readOnlyField]: grant.readOnly,
         [this.oauthClientIdField]: grant.clientId,
       },
     });
@@ -231,6 +236,7 @@ export class McpAuthSecretStore {
       adminUser,
       client: parseStoredClient(record[fields.lastUsedByAgentField]),
       name: record[fields.nameField],
+      readOnly: record[fields.readOnlyField],
       recordId: record[fields.idField],
     };
   }

@@ -32,6 +32,7 @@ export function createMcpServerPresentation(
   brandName: string,
   adminPanelUrl?: string,
   guidance = '',
+  readOnly = false,
 ): McpServerPresentation {
   const adminPanel = `AdminForth admin panel for "${brandName}"${adminPanelUrl ? ` at ${adminPanelUrl}` : ''}`;
   return {
@@ -43,7 +44,7 @@ export function createMcpServerPresentation(
       ...(adminPanelUrl && { websiteUrl: adminPanelUrl }),
     },
     instructions: [
-      `This is the ${adminPanel}. Use its tools to read and update data allowed for the authenticated user.`,
+      `This is the ${adminPanel}. Use its tools to ${readOnly ? 'read' : 'read and update'} data allowed for the authenticated user.`,
       guidance,
     ].filter(Boolean).join('\n\n'),
   };

@@ -9,6 +9,7 @@ export const SECRET_OPTIONS = {
   createdAtField: 'created_at',
   lastUsedAtField: 'last_used_at',
   lastUsedByAgentField: 'last_used_by_agent',
+  readOnlyField: 'read_only',
 };
 
 function matches(record, filter) {

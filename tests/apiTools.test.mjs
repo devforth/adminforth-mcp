@@ -47,7 +47,7 @@ function createTools(endpoints, { toolTimeoutMs = 1_000, hiddenResourceIds = [] 
   return new AdminForthApiTools(createAdminForth(endpoints), new Set(hiddenResourceIds), PAGE_SIZE, toolTimeoutMs);
 }
 
-function callTool(tools, name, args) {
+function callTool(tools, name, args, { readOnly = false } = {}) {
   return tools.call({
     name,
     arguments: args,
@@ -55,6 +55,7 @@ function callTool(tools, name, args) {
     headers: {},
     requestUrl: `${API_PREFIX}/mcp`,
     abortSignal: new AbortController().signal,
+    readOnly,
   });
 }
 
@@ -74,17 +75,17 @@ function recordingEndpoint(path, output, extra = {}) {
   };
 }
 
-test('lists endpoints with handlers as tools, except the MCP endpoints', () => {
+test('lists endpoints with handlers as tools, except the ones hidden from agents', () => {
   const tools = createTools([
     { path: '/get_resource', description: 'Gets a resource.', handler: async () => ({}) },
     { path: '/plugin/abc123/upload', handler: async () => ({}) },
-    { path: '/mcp/auth-secrets', handler: async () => ({}) },
-    { path: '/mcp', handler: async () => ({}) },
+    { path: '/mcp/auth-secrets', agent: { hiddenFromAgents: true }, handler: async () => ({}) },
+    { path: '/mcp', agent: { hiddenFromAgents: true }, handler: async () => ({}) },
     // express routes annotated with withSchema have no handler
     { path: '/api/create-job/' },
   ]);
 
-  assert.deepEqual(tools.list().map((tool) => tool.name), ['get_resource', 'plugin_abc123_upload']);
+  assert.deepEqual(tools.list(false).map((tool) => tool.name), ['get_resource', 'plugin_abc123_upload']);
 });
 
 test('marks dangerous tools and asks for a confirmation in their description', () => {
@@ -92,7 +93,7 @@ test('marks dangerous tools and asks for a confirmation in their description', (
     { path: '/delete_record', description: 'Deletes a record.', agent: { requiresHumanApproval: true }, handler: async () => ({}) },
   ]);
 
-  const [tool] = tools.list();
+  const [tool] = tools.list(false);
   assert.deepEqual(tool.annotations, { destructiveHint: true });
   assert.match(tool.description, /^Deletes a record\. /);
   assert.match(tool.description, /wait for their explicit confirmation/);
@@ -101,7 +102,7 @@ test('marks dangerous tools and asks for a confirmation in their description', (
 test('omits the description of an undocumented tool', () => {
   const tools = createTools([{ path: '/plugin/abc123/upload', handler: async () => ({}) }]);
 
-  assert.equal('description' in tools.list()[0], false);
+  assert.equal('description' in tools.list(false)[0], false);
 });
 
 test('compacts tool input schemas', () => {
@@ -122,7 +123,7 @@ test('compacts tool input schemas', () => {
     },
   }]);
 
-  assert.deepEqual(tools.list()[0].inputSchema, {
+  assert.deepEqual(tools.list(false)[0].inputSchema, {
     type: 'object',
     properties: {
       record: { $ref: '#/$defs/Record' },
@@ -195,14 +196,14 @@ test('appends the plugin notes to the endpoint descriptions', () => {
     { path: '/get_resource_data', description: 'Gets records.', handler: async () => ({}) },
   ]);
 
-  const [getResource, getResourceData] = tools.list();
+  const [getResource, getResourceData] = tools.list(false);
   assert.match(getResource.description, /^Gets a resource\. By default only the columns needed/);
   assert.match(getResourceData.description, /^Gets records\. Returns 10 rows unless limit is passed, and at most 100 rows per call;/);
 });
 
 test('get_resource advertises the detailed argument', () => {
   const { endpoint } = recordingEndpoint('/get_resource', {});
-  const [tool] = createTools([endpoint]).list();
+  const [tool] = createTools([endpoint]).list(false);
 
   assert.equal(tool.inputSchema.properties.detailed.type, 'boolean');
   assert.deepEqual(tool.inputSchema.required, ['resourceId']);
@@ -223,7 +224,7 @@ test('get_resource_data fills default arguments and makes them optional', async 
   });
   const tools = createTools([endpoint]);
 
-  assert.deepEqual(tools.list()[0].inputSchema.required, ['resourceId']);
+  assert.deepEqual(tools.list(false)[0].inputSchema.required, ['resourceId']);
   await callTool(tools, 'get_resource_data', { resourceId: 'cars' });
   assert.deepEqual(calls[0].body, { source: 'list', limit: 10, offset: 0, resourceId: 'cars' });
 });
@@ -368,4 +369,40 @@ test('aborts the handler signal when the MCP request is aborted', async () => {
   });
 
   assert.equal(handlerSignal.aborted, true);
+});
+
+test('lists only endpoints that only read data in read-only mode', async () => {
+  const tools = createTools([
+    { path: '/get_resource', description: 'Gets a resource.', agent: { onlyReadsData: true }, handler: async () => ({}) },
+    { path: '/delete_record', description: 'Deletes a record.', agent: { requiresHumanApproval: true }, handler: async () => ({}) },
+  ]);
+
+  assert.deepEqual(tools.list(false).map((tool) => tool.name), ['delete_record', 'get_resource']);
+  assert.deepEqual(tools.list(false).find((tool) => tool.name === 'get_resource').annotations, { readOnlyHint: true });
+  assert.deepEqual(tools.list(true).map((tool) => tool.name), ['get_resource']);
+  assert.deepEqual(
+    await callTool(tools, 'delete_record', { resourceId: 'cars' }, { readOnly: true }),
+    { output: { error: 'Unknown tool: delete_record' }, isError: true },
+  );
+});
+
+test('names tools by the endpoint path without the baseUrl and API prefix', () => {
+  const handler = async () => ({ ok: true });
+  const adminforth = {
+    config: { baseUrl: '/backoffice' },
+    openApi: {
+      registeredSchemas: [
+        { method: 'post', path: '/backoffice/adminapi/v1/get_resource', description: 'Get resource.', agent: { onlyReadsData: true }, handler },
+        { method: 'post', path: '/backoffice/adminapi/v1/delete_record', description: 'Delete record.', agent: { requiresHumanApproval: true }, handler },
+        { method: 'post', path: '/backoffice/adminapi/v1/plugin/passkeys/deletePasskey', agent: { hiddenFromAgents: true }, handler },
+        { method: 'post', path: '/backoffice/adminapi/v1/express_route', description: 'Express route.' },
+      ],
+    },
+  };
+
+  const tools = new AdminForthApiTools(adminforth, new Set(), PAGE_SIZE, 1_000).list(false);
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.annotations]), [
+    ['delete_record', { destructiveHint: true }],
+    ['get_resource', { readOnlyHint: true }],
+  ]);
 });

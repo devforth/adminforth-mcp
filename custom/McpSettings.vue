@@ -22,7 +22,15 @@
       :pageSize="10"
     >
       <template #cell:name="{ item }">
-        <p class="font-medium text-gray-900 dark:text-white">{{ item.name }}</p>
+        <p class="font-medium text-gray-900 dark:text-white">
+          {{ item.name }}
+          <span
+            v-if="serverReadOnly || item.readOnly"
+            class="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+          >
+            {{ $t('Read only') }}
+          </span>
+        </p>
         <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
           {{ item.oauthClientId ? `${$t('OAuth')} · ${oauthClientHost(item.oauthClientId)}` : $t('Auth secret') }} · {{ formatDateTime(item.createdAt) }}
         </p>
@@ -70,7 +78,12 @@
       <template v-if="showsCreatedSecret">
         <p class="mt-4 text-sm text-amber-700 dark:text-amber-300">{{ $t('Copy it now. You will not be able to view it again.') }}</p>
         <p class="mt-3 rounded-default border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
-          {{ $t('This secret lets an agent do everything you can do in the admin panel, including deleting data and changing your security settings. Keep it like a password, give it to one agent only, and revoke it if that agent or its device is compromised.') }}
+          <template v-if="createdSecretReadOnly">
+            {{ $t('This secret lets an agent read all data you can see in the admin panel. Keep it like a password, give it to one agent only, and revoke it if that agent or its device is compromised.') }}
+          </template>
+          <template v-else>
+            {{ $t('This secret lets an agent do everything you can do in the admin panel, including deleting data and changing your security settings. Keep it like a password, give it to one agent only, and revoke it if that agent or its device is compromised.') }}
+          </template>
         </p>
       </template>
 
@@ -91,6 +104,9 @@
         <div class="mt-2">
           <Input v-model="secretName" type="text" fullWidth placeholder="Claude Code" />
         </div>
+        <Checkbox v-if="!serverReadOnly" v-model="secretReadOnly" class="mt-4">
+          {{ $t('Read only: the agent can only read data') }}
+        </Checkbox>
       </div>
 
       <template v-if="showsCreatedSecret">
@@ -104,7 +120,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Button, ButtonGroup, Dialog, Input, Table } from '@/afcl';
+import { Button, ButtonGroup, Checkbox, Dialog, Input, Table } from '@/afcl';
 import { useCoreStore } from '@/stores/core';
 import adminforth from '@/adminforth';
 import { callAdminForthApi, formatDateTime } from '@/utils';
@@ -119,6 +135,7 @@ type AuthSecret = {
   createdAt: string;
   lastUsedAt: string | null;
   lastUsedByAgent: Agent | null;
+  readOnly: boolean;
   oauthClientId: string | null;
 };
 type Client = typeof CLIENTS[number];
@@ -141,6 +158,8 @@ const authSecrets = ref<AuthSecret[]>([]);
 const loading = ref(true);
 const dialogRef = ref();
 const secretName = ref('');
+const secretReadOnly = ref(false);
+const serverReadOnly = ref(false);
 const createdSecret = ref('');
 const creating = ref(false);
 const revokingId = ref<string | null>(null);
@@ -185,6 +204,8 @@ const dialogButtons = computed(() => {
     },
   ];
 });
+
+const createdSecretReadOnly = computed(() => serverReadOnly.value || secretReadOnly.value);
 
 function fallbackMcpUrl() {
   const baseUrl = (import.meta.env.VITE_ADMINFORTH_PUBLIC_PATH || '').replace(/\/$/, '');
@@ -242,6 +263,7 @@ async function loadAuthSecrets() {
       if (!response.oauthEnabled) activeClient.value = 'Other';
       oauthEnabled.value = response.oauthEnabled;
       mcpUrl.value = response.mcpUrl ?? fallbackMcpUrl();
+      serverReadOnly.value = response.serverReadOnly;
     }
   } finally {
     loading.value = false;
@@ -250,6 +272,7 @@ async function loadAuthSecrets() {
 
 function openConnectDialog() {
   secretName.value = '';
+  secretReadOnly.value = false;
   createdSecret.value = '';
   dialogRef.value?.open();
 }
@@ -261,7 +284,7 @@ async function createAuthSecret() {
     const response = await callAdminForthApi({
       method: 'POST',
       path: '/mcp/auth-secrets',
-      body: { name: secretName.value.trim() },
+      body: { name: secretName.value.trim(), readOnly: secretReadOnly.value },
     });
     if (response?.secret) {
       createdSecret.value = response.secret;
