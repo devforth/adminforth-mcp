@@ -104,7 +104,7 @@
         <div class="mt-2">
           <Input v-model="secretName" type="text" fullWidth placeholder="Claude Code" />
         </div>
-        <Checkbox v-if="!serverReadOnly" v-model="secretReadOnly" class="mt-4">
+        <Checkbox v-model="secretReadOnly" :disabled="serverReadOnly" class="mt-4">
           {{ $t('Read only: the agent can only read data') }}
         </Checkbox>
       </div>
@@ -158,7 +158,8 @@ const authSecrets = ref<AuthSecret[]>([]);
 const loading = ref(true);
 const dialogRef = ref();
 const secretName = ref('');
-const secretReadOnly = ref(false);
+// Read-only is the default; with the plugin readOnly option the checkbox stays checked and locked.
+const secretReadOnly = ref(true);
 const serverReadOnly = ref(false);
 const createdSecret = ref('');
 const creating = ref(false);
@@ -272,7 +273,7 @@ async function loadAuthSecrets() {
 
 function openConnectDialog() {
   secretName.value = '';
-  secretReadOnly.value = false;
+  secretReadOnly.value = true;
   createdSecret.value = '';
   dialogRef.value?.open();
 }

@@ -21,7 +21,7 @@
             {{ $t('asks to act on your behalf in {brand}: it will see and change everything you can.', { brand: brandName }) }}
           </template>
         </p>
-        <Checkbox v-if="!authorization.serverReadOnly" v-model="readOnlyChosen" class="mt-4">
+        <Checkbox v-model="readOnlyChosen" :disabled="authorization.serverReadOnly" class="mt-4">
           {{ $t('Read only: the agent can only read data') }}
         </Checkbox>
         <p v-if="authorization.loopbackRedirect" class="mt-3 text-sm font-medium text-amber-700 dark:text-amber-300">
@@ -71,8 +71,9 @@ const request = String(route.query.request);
 const authorization = ref<Authorization | null>(null);
 const error = ref('');
 const resolving = ref(false);
-const readOnlyChosen = ref(false);
-// With the plugin readOnly option every connection is read-only, so there is no choice to make.
+// Read-only is the default. With the plugin readOnly option every connection is read-only, so the checkbox stays
+// checked and locked.
+const readOnlyChosen = ref(true);
 const readOnly = computed(() => authorization.value?.serverReadOnly || readOnlyChosen.value);
 // AdminForth sends no frame protection headers, so a site sharing the admin panel domain could load this page in
 // an invisible frame and trick a click on Allow (clickjacking). The consent is never offered inside a frame.
