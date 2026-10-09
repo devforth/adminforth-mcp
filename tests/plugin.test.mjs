@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import express from 'express';
 import AdminForthMcpPlugin from '../dist/index.js';
 import { createPlugin, SECRET_OPTIONS } from './pluginHarness.mjs';
 
@@ -19,7 +20,7 @@ function accessToken(adminforth, payload) {
 async function createSecret(endpoints) {
   const response = { setHeader: () => {}, setStatus: () => {} };
   const { secret } = await endpoints.get('POST /mcp/auth-secrets').handler({
-    body: { name: 'Codex' },
+    body: { name: 'Codex', readOnly: false },
     adminUser: { pk: 'user-1', username: 'owner@example.com' },
     headers: {},
     query: {},
@@ -34,7 +35,7 @@ test('authenticates an OAuth access token of an existing grant as the grant user
   addGrant(records);
 
   const { status } = await callMcp(accessToken(adminforth, { pk: 'user-1', grantId: 'grant-1' }));
-  assert.notEqual(status, 401);
+  assert.equal(status, 200);
   assert.equal(authorizedUsers.length, 1);
   assert.equal(authorizedUsers[0].pk, 'user-1');
 });
@@ -68,7 +69,7 @@ test('stops accepting an access token once its grant is revoked', async () => {
   addGrant(records);
   const authorization = accessToken(adminforth, { pk: 'user-1', grantId: 'grant-1' });
 
-  assert.notEqual((await callMcp(authorization)).status, 401);
+  assert.equal((await callMcp(authorization)).status, 200);
   records.length = 0;
   assert.equal((await callMcp(authorization)).status, 401);
 });
@@ -80,50 +81,50 @@ test('points a request without a token to the OAuth metadata', async () => {
   assert.equal(headers.get('WWW-Authenticate'), `Bearer ${RESOURCE_METADATA}`);
 });
 
-test('accepts personal auth secrets with OAuth enabled', async () => {
+test('accepts personal auth secrets', async () => {
   const { endpoints, authorizedUsers, callMcp } = createPlugin();
   const secret = await createSecret(endpoints);
 
-  assert.notEqual((await callMcp(`Bearer ${secret}`)).status, 401);
+  assert.equal((await callMcp(`Bearer ${secret}`)).status, 200);
   assert.equal(authorizedUsers[0].pk, 'user-1');
 });
 
-test('enables OAuth only with oauthClientIdField', async () => {
-  const enabled = createPlugin();
-  const disabled = createPlugin({ oauth: false });
+test('registers the OAuth endpoints and the consent page', () => {
+  const { endpoints, rawRoutes, adminforth } = createPlugin();
 
-  assert.ok(enabled.endpoints.has('GET /mcp/oauth/authorize'));
-  assert.ok(enabled.rawRoutes.has('POST /adminapi/v1/mcp/oauth/token'));
-  assert.deepEqual(enabled.adminforth.config.customization.customPages.map((page) => page.path), ['/mcp-authorize']);
-
-  assert.deepEqual([...disabled.endpoints.keys()].filter((key) => key.includes('oauth')), []);
-  assert.equal(disabled.rawRoutes.size, 0);
-  assert.deepEqual(disabled.adminforth.config.customization.customPages, []);
-
-  const list = async ({ endpoints }) => endpoints.get('GET /mcp/auth-secrets').handler({ adminUser: { pk: 'user-1' } });
-  assert.equal((await list(enabled)).oauthEnabled, true);
-  assert.equal((await list(disabled)).oauthEnabled, false);
+  assert.ok(endpoints.has('GET /mcp/oauth/authorize'));
+  assert.ok(rawRoutes.has('POST /adminapi/v1/mcp/oauth/token'));
+  assert.deepEqual(adminforth.config.customization.customPages.map((page) => page.path), ['/mcp-authorize']);
 });
 
-test('gives the settings page the MCP URL built from adminPanelOrigin, if configured', async () => {
-  const list = async ({ endpoints }) => endpoints.get('GET /mcp/auth-secrets').handler({ adminUser: { pk: 'user-1' } });
-  assert.equal((await list(createPlugin({ oauth: false }))).mcpUrl, 'https://admin.example/adminapi/v1/mcp');
-  assert.equal((await list(createPlugin({ oauth: false, adminPanelOrigin: null }))).mcpUrl, null);
+test('reads form-encoded token requests and caps their size', async (t) => {
+  const app = express();
+  app.set('env', 'test');
+  createPlugin({ expressApp: app });
+  const server = app.listen(0);
+  t.after(() => server.close());
+  const post = (body, contentType) => fetch(`http://127.0.0.1:${server.address().port}/adminapi/v1/mcp/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': contentType },
+    body,
+  });
+
+  const form = await post(new URLSearchParams({ grant_type: 'refresh_token', refresh_token: 'made-up', client_id: CLIENT_ID }).toString(), 'application/x-www-form-urlencoded');
+  assert.equal(form.status, 400);
+  assert.equal((await form.json()).error, 'invalid_grant');
+
+  const notForm = await post('{}', 'application/json');
+  assert.equal(notForm.status, 400);
+  assert.equal((await notForm.json()).error, 'unsupported_grant_type');
+
+  const tooLarge = await post(`grant_type=${'a'.repeat(17 * 1024)}`, 'application/x-www-form-urlencoded');
+  assert.equal(tooLarge.status, 413);
 });
 
-test('without OAuth accepts auth secrets only and answers like before OAuth', async () => {
-  const { adminforth, records, endpoints, authorizedUsers, callMcp } = createPlugin({ oauth: false });
-  addGrant(records);
-
-  const withAccessToken = await callMcp(accessToken(adminforth, { pk: 'user-1', grantId: 'grant-1' }));
-  assert.equal(withAccessToken.status, 401);
-  assert.equal(withAccessToken.headers.get('WWW-Authenticate'), 'Bearer');
-  assert.equal((await callMcp()).headers.get('WWW-Authenticate'), 'Bearer');
-
-  const secret = await createSecret(endpoints);
-  assert.notEqual((await callMcp(`Bearer ${secret}`)).status, 401);
-  assert.equal(authorizedUsers.length, 1);
-  assert.equal('oauth_client_id' in records.at(-1), false);
+test('gives the settings page the MCP URL built from adminPanelOrigin', async () => {
+  const { endpoints } = createPlugin();
+  const { mcpUrl } = await endpoints.get('GET /mcp/auth-secrets').handler({ adminUser: { pk: 'user-1' } });
+  assert.equal(mcpUrl, 'https://admin.example/adminapi/v1/mcp');
 });
 
 test('requires https adminPanelOrigin for OAuth except on localhost', () => {
@@ -133,20 +134,17 @@ test('requires https adminPanelOrigin for OAuth except on localhost', () => {
   for (const origin of ['https://admin.example', 'http://localhost:3123', 'http://127.0.0.1:3500', 'http://[::1]:3500']) {
     assert.doesNotThrow(() => createPlugin({ adminPanelOrigin: origin }), origin);
   }
-  assert.doesNotThrow(() => createPlugin({ oauth: false, adminPanelOrigin: 'http://admin.example' }));
-});
-
-test('requires adminPanelOrigin when OAuth is enabled', () => {
-  assert.throws(() => createPlugin({ adminPanelOrigin: null }), /adminPanelOrigin is required/);
-  assert.doesNotThrow(() => createPlugin({ oauth: false, adminPanelOrigin: null }));
 });
 
 test('requires the oauthClientIdField column in the auth secret resource', () => {
   const plugin = new AdminForthMcpPlugin({
     adminPanelOrigin: 'https://admin.example',
-    authSecretResource: { ...SECRET_OPTIONS, oauthClientIdField: 'oauth_client_id' },
+    authSecretResource: SECRET_OPTIONS,
   });
-  const columns = Object.values(SECRET_OPTIONS).slice(1).map((name) => ({ name, primaryKey: name === 'id' }));
+  const columns = Object.values(SECRET_OPTIONS)
+    .slice(1)
+    .filter((name) => name !== SECRET_OPTIONS.oauthClientIdField)
+    .map((name) => ({ name, primaryKey: name === 'id' }));
   const adminforth = {
     config: {
       baseUrl: '',

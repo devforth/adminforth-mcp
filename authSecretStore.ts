@@ -1,16 +1,15 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   Filters,
-  Sorts,
   logger,
-  type AdminForthResource,
   type AdminUser,
   type HttpExtra,
   type IAdminForth,
 } from 'adminforth';
 import { UNKNOWN_CLIENT } from './clientInfo.js';
 import { KeyedLock } from './keyedLock.js';
-import type { McpAuthSecretResourceOptions, McpClientInfo } from './types.js';
+import type { AuthSecret, AuthSecretRepository } from './repositories/authSecret.js';
+import type { McpClientInfo } from './types.js';
 
 export const SECRET_PREFIX = 'afmcp_';
 
@@ -36,102 +35,40 @@ function hashSecret(secret: string): string {
   return createHash('sha256').update(secret).digest('hex');
 }
 
-/**
- * Stored agent info originates from the MCP client, so it is never trusted to be valid JSON:
- * a database column which truncated an oversized value would otherwise break every next
- * request made with the auth secret, including the page used to revoke it.
- */
-function parseStoredClient(value: unknown): McpClientInfo | null {
-  if (typeof value !== 'string' || !value) return null;
-  let parsed: any;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || typeof parsed.client !== 'string') return null;
-  return { client: parsed.client, ver: typeof parsed.ver === 'string' ? parsed.ver : null };
-}
-
 export class McpAuthSecretStore {
-  private readonly resource: AdminForthResource;
   private readonly refreshLock = new KeyedLock();
 
   constructor(
     private readonly adminforth: IAdminForth,
-    private readonly options: McpAuthSecretResourceOptions,
-  ) {
-    this.resource = adminforth.config.resources.find(
-      (resource) => resource.resourceId === options.resourceId,
-    )!;
-  }
+    private readonly repository: AuthSecretRepository,
+  ) {}
 
   async list(adminUser: AdminUser) {
-    const fields = this.options;
-    const records = await this.adminforth.resource(fields.resourceId).list(
-      Filters.EQ(fields.userIdField, adminUser.pk),
-      undefined,
-      undefined,
-      Sorts.DESC(fields.createdAtField),
-    );
-
-    return records.map((record) => ({
-      id: record[fields.idField],
-      name: record[fields.nameField],
-      createdAt: record[fields.createdAtField],
-      lastUsedAt: record[fields.lastUsedAtField] ?? null,
-      lastUsedByAgent: parseStoredClient(record[fields.lastUsedByAgentField]),
-      readOnly: record[fields.readOnlyField],
-      oauthClientId: fields.oauthClientIdField ? record[fields.oauthClientIdField] ?? null : null,
-    }));
+    const authSecrets = await this.repository.listByUser(adminUser.pk!);
+    return authSecrets.map(({ secretHash, userId, ...authSecret }) => authSecret);
   }
 
   async create(name: string, readOnly: boolean, adminUser: AdminUser, extra: HttpExtra) {
-    const fields = this.options;
     const secret = `${SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;
-    const result = await this.adminforth.createResourceRecord({
-      resource: this.resource,
-      adminUser,
-      extra,
-      record: {
-        [fields.idField]: randomUUID(),
-        [fields.nameField]: name,
-        [fields.secretHashField]: hashSecret(secret),
-        [fields.userIdField]: adminUser.pk,
-        [fields.createdAtField]: new Date().toISOString(),
-        [fields.lastUsedAtField]: null,
-        [fields.lastUsedByAgentField]: null,
-        [fields.readOnlyField]: readOnly,
-        ...(fields.oauthClientIdField && { [fields.oauthClientIdField]: null }),
-      },
-    });
+    const result = await this.repository.create({
+      id: randomUUID(),
+      name,
+      secretHash: hashSecret(secret),
+      userId: adminUser.pk!,
+      readOnly,
+      oauthClientId: null,
+    }, adminUser, extra);
 
     return result.error ? { error: result.error } : { secret };
   }
 
   async revoke(id: string, adminUser: AdminUser, extra: HttpExtra) {
-    const fields = this.options;
-    const record = await this.adminforth.resource(fields.resourceId).get(Filters.AND(
-      Filters.EQ(fields.idField, id),
-      Filters.EQ(fields.userIdField, adminUser.pk),
-    ));
-
-    if (!record) return { error: 'MCP auth secret not found' };
-
-    return this.adminforth.deleteResourceRecord({
-      resource: this.resource,
-      record,
-      recordId: id,
-      adminUser,
-      extra,
-    });
+    return await this.repository.deleteByIdAndUser(id, adminUser, extra) ?? { error: 'MCP auth secret not found' };
   }
 
   async authenticate(secret: string): Promise<AuthenticatedMcpSecret | null> {
-    const record = await this.adminforth.resource(this.options.resourceId).get(
-      Filters.EQ(this.options.secretHashField, hashSecret(secret)),
-    );
-    return record ? this.toAuthenticated(record) : null;
+    const authSecret = await this.repository.findBySecretHash(hashSecret(secret));
+    return authSecret ? this.toAuthenticated(authSecret) : null;
   }
 
   /**
@@ -139,31 +76,21 @@ export class McpAuthSecretStore {
    * like personal secrets. The record id is the authorization code id, which makes every code redeemable once.
    */
   async createOAuthGrant(grant: OAuthGrant, refreshToken: string): Promise<{ error?: string }> {
-    const fields = this.options;
-    const resource = this.adminforth.resource(fields.resourceId);
-    if (await resource.get(Filters.EQ(fields.idField, grant.id))) {
+    if (await this.repository.findById(grant.id)) {
       return { error: 'Authorization code was already used' };
     }
 
     const adminUser = await this.loadAdminUser(grant.userId);
     if (!adminUser) return { error: 'User of the authorization code no longer exists' };
 
-    const result = await this.adminforth.createResourceRecord({
-      resource: this.resource,
-      adminUser,
-      extra: {} as HttpExtra,
-      record: {
-        [fields.idField]: grant.id,
-        [fields.nameField]: grant.clientName,
-        [fields.secretHashField]: hashSecret(refreshToken),
-        [fields.userIdField]: grant.userId,
-        [fields.createdAtField]: new Date().toISOString(),
-        [fields.lastUsedAtField]: null,
-        [fields.lastUsedByAgentField]: null,
-        [fields.readOnlyField]: grant.readOnly,
-        [this.oauthClientIdField]: grant.clientId,
-      },
-    });
+    const result = await this.repository.create({
+      id: grant.id,
+      name: grant.clientName,
+      secretHash: hashSecret(refreshToken),
+      userId: grant.userId,
+      readOnly: grant.readOnly,
+      oauthClientId: grant.clientId,
+    }, adminUser, {} as HttpExtra);
     return result.error ? { error: result.error } : {};
   }
 
@@ -180,39 +107,25 @@ export class McpAuthSecretStore {
     clientId: string,
     newRefreshToken: string,
   ): Promise<string | null> {
-    const fields = this.options;
-    const resource = this.adminforth.resource(fields.resourceId);
     return this.refreshLock.run(grantId, async () => {
-      const record = await resource.get(Filters.AND(
-        Filters.EQ(fields.idField, grantId),
-        Filters.EQ(this.oauthClientIdField, clientId),
-      ));
-      if (!record) return null;
+      const grant = await this.repository.findById(grantId);
+      if (grant?.oauthClientId !== clientId) return null;
 
-      if (record[fields.secretHashField] !== hashSecret(refreshToken)) {
+      if (grant.secretHash !== hashSecret(refreshToken)) {
         logger.warn(`AdminForthMcpPlugin: a rotated refresh token of OAuth grant ${grantId} was used again, revoking the grant`);
-        await resource.delete(grantId);
+        await this.repository.deleteById(grantId);
         return null;
       }
 
-      await resource.update(grantId, { [fields.secretHashField]: hashSecret(newRefreshToken) });
-      return record[fields.userIdField];
+      await this.repository.updateSecretHash(grantId, hashSecret(newRefreshToken));
+      return grant.userId;
     });
   }
 
   /** Access tokens are checked against their grant on every request, so revoking the grant applies at once. */
   async authenticateOAuthGrant(grantId: string, userId: string): Promise<AuthenticatedMcpSecret | null> {
-    const fields = this.options;
-    const record = await this.adminforth.resource(fields.resourceId).get(Filters.AND(
-      Filters.EQ(fields.idField, grantId),
-      Filters.EQ(fields.userIdField, userId),
-    ));
-    return record?.[this.oauthClientIdField] ? this.toAuthenticated(record) : null;
-  }
-
-  /** The OAuth grant methods are called only when OAuth is enabled, which requires this field. */
-  private get oauthClientIdField(): string {
-    return this.options.oauthClientIdField!;
+    const grant = await this.repository.findById(grantId);
+    return grant?.userId === userId && grant.oauthClientId ? this.toAuthenticated(grant) : null;
   }
 
   private async loadAdminUser(pk: string): Promise<AdminUser | null> {
@@ -227,30 +140,22 @@ export class McpAuthSecretStore {
     return dbUser ? { pk, username: dbUser[auth.usernameField], dbUser } : null;
   }
 
-  private async toAuthenticated(record: Record<string, any>): Promise<AuthenticatedMcpSecret | null> {
-    const fields = this.options;
-    const adminUser = await this.loadAdminUser(record[fields.userIdField]);
+  private async toAuthenticated(authSecret: AuthSecret): Promise<AuthenticatedMcpSecret | null> {
+    const adminUser = await this.loadAdminUser(authSecret.userId);
     if (!adminUser) return null;
 
     return {
       adminUser,
-      client: parseStoredClient(record[fields.lastUsedByAgentField]),
-      name: record[fields.nameField],
-      readOnly: record[fields.readOnlyField],
-      recordId: record[fields.idField],
+      client: authSecret.lastUsedByAgent,
+      name: authSecret.name,
+      readOnly: authSecret.readOnly,
+      recordId: authSecret.id,
     };
   }
 
   touch(recordId: string, client: McpClientInfo): void {
-    const fields = this.options;
-    const updates: Record<string, unknown> = {
-      [fields.lastUsedAtField]: new Date().toISOString(),
-    };
-    if (client.client !== UNKNOWN_CLIENT) {
-      updates[fields.lastUsedByAgentField] = JSON.stringify(client);
-    }
-
-    void this.adminforth.resource(fields.resourceId).update(recordId, updates).catch((error) => {
+    const knownClient = client.client === UNKNOWN_CLIENT ? undefined : client;
+    void this.repository.updateUsage(recordId, knownClient).catch((error) => {
       logger.error(`AdminForthMcpPlugin: failed to update MCP auth secret usage: ${String(error)}`);
     });
   }

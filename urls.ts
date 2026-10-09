@@ -1,14 +1,19 @@
 export const MCP_PATH = '/mcp';
+export const CONSENT_PAGE_PATH = '/mcp-authorize';
 
-/** Path prefix of AdminForth API endpoints, e.g. `/admin/adminapi/v1`. */
+export const OAUTH_PATHS = {
+  protectedResourceMetadata: `${MCP_PATH}/oauth-protected-resource`,
+  authorizationServerMetadata: `${MCP_PATH}/.well-known/openid-configuration`,
+  jwks: `${MCP_PATH}/oauth/jwks`,
+  authorize: `${MCP_PATH}/oauth/authorize`,
+  token: `${MCP_PATH}/oauth/token`,
+  authorization: `${MCP_PATH}/oauth/authorization`,
+};
+
 export function adminApiPrefix(baseUrl: string): string {
   return `${baseUrl}/adminapi/v1`;
 }
 
-/**
- * Public URLs of the plugin, built once from adminPanelOrigin: the settings page, OAuth metadata and the MCP server
- * info must all name the same URL, because OAuth accepts tokens only for the exact MCP resource URL.
- */
 export interface McpUrls {
   apiUrl: string;
   mcpUrl: string;

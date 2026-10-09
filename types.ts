@@ -10,11 +10,7 @@ export interface McpAuthSecretResourceOptions {
   lastUsedAtField: string;
   lastUsedByAgentField: string;
   readOnlyField: string;
-  /**
-   * Client ID Metadata Document URL of the MCP client connected through OAuth; empty for personal auth secrets.
-   * Setting it enables OAuth sign-in, which also needs adminPanelOrigin. Without it only auth secrets work.
-   */
-  oauthClientIdField?: string;
+  oauthClientIdField: string;
 }
 
 /** An MCP client allowed to connect through OAuth, as its Client ID Metadata Document describes it. */
@@ -25,9 +21,7 @@ export interface McpOAuthClient {
 }
 
 export interface McpPageSize {
-  /** Rows get_resource_data returns when the client does not pass limit. */
   default: number;
-  /** Most rows get_resource_data returns per call; larger limits are capped. */
   max: number;
 }
 
@@ -36,10 +30,9 @@ export interface PluginOptions extends PluginsCommonOptions {
   /**
    * Public origin of this AdminForth installation, without the AdminForth baseUrl path, e.g. https://example.com.
    * The MCP server URL shown on the settings page, the OAuth issuer and resource URLs are built from it, so it must
-   * be the origin MCP clients connect to. Required with OAuth sign-in; without it the settings page shows the MCP URL
-   * of the address it was opened at.
+   * be the origin MCP clients connect to.
    */
-  adminPanelOrigin?: string;
+  adminPanelOrigin: string;
   /**
    * MCP clients resolved from this list instead of fetching their Client ID Metadata Document, so OAuth can be
    * tried locally without a public https URL. Ignored when NODE_ENV is "production": there every client_id is

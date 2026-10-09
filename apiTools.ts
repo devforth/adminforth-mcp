@@ -1,3 +1,4 @@
+import type { Tool } from '@modelcontextprotocol/server';
 import { compactInputSchema } from './compactInputSchema.js';
 import type { McpPageSize } from './types.js';
 import { adminApiPrefix } from './urls.js';
@@ -11,6 +12,8 @@ import type {
 } from 'adminforth';
 
 const METHODS_WITHOUT_REQUEST_BODY = new Set(['GET', 'HEAD']);
+const NON_TOOL_NAME_CHARACTER_RE = /[^a-zA-Z0-9_]+/g;
+const EDGE_UNDERSCORE_RE = /^_+|_+$/g;
 // Milliseconds cost tokens on every datetime value and are never needed to answer the user.
 const ISO_MILLISECONDS_RE = /\.\d+(?=Z$)/;
 const TOOL_TIMEOUT = Symbol('TOOL_TIMEOUT');
@@ -79,11 +82,9 @@ type RegisteredToolSchema = IRegisteredApiSchema & {
   handler: NonNullable<IRegisteredApiSchema['handler']>;
 };
 
-export interface McpToolDefinition {
-  name: string;
-  description?: string;
-  inputSchema: Record<string, unknown>;
-  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
+interface ToolCatalog {
+  schemas: Map<string, RegisteredToolSchema>;
+  tools: Tool[];
 }
 
 function isRegisteredToolSchema(schema: IRegisteredApiSchema): schema is RegisteredToolSchema {
@@ -91,16 +92,7 @@ function isRegisteredToolSchema(schema: IRegisteredApiSchema): schema is Registe
 }
 
 function endpointPathToToolName(path: string): string {
-  return path
-    .replace(/^\/+/, '')
-    .replace(/[^a-zA-Z0-9_]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-}
-
-function stripAdminApiPrefix(path: string, adminforth: IAdminForth): string {
-  const apiPrefix = adminApiPrefix(adminforth.config.baseUrl);
-  const strippedPath = path.startsWith(apiPrefix) ? path.slice(apiPrefix.length) : path;
-  return strippedPath.startsWith('/') ? strippedPath : `/${strippedPath}`;
+  return path.replace(NON_TOOL_NAME_CHARACTER_RE, '_').replace(EDGE_UNDERSCORE_RE, '');
 }
 
 // Drops frontend-only parts of the get_resource response that are useless for MCP clients and only waste their context.
@@ -248,17 +240,41 @@ export class AdminForthApiTools {
   }
 
   private readonly toolOverrides: Record<string, ToolOverride>;
+  private fullCatalog?: ToolCatalog;
+  private readOnlyCatalog?: ToolCatalog;
 
-  private schemas(readOnly: boolean): Map<string, RegisteredToolSchema> {
-    const schemas = new Map<string, RegisteredToolSchema>();
+  private catalog(readOnly: boolean): ToolCatalog {
+    return readOnly
+      ? (this.readOnlyCatalog ??= this.buildCatalog(true))
+      : (this.fullCatalog ??= this.buildCatalog(false));
+  }
 
-    for (const schema of this.adminforth.openApi.registeredSchemas) {
-      if (!isRegisteredToolSchema(schema)) continue;
-      if (readOnly && !schema.agent?.onlyReadsData) continue;
-      schemas.set(endpointPathToToolName(stripAdminApiPrefix(schema.path, this.adminforth)), schema);
-    }
-
-    return schemas;
+  private buildCatalog(readOnly: boolean): ToolCatalog {
+    const apiPrefix = adminApiPrefix(this.adminforth.config.baseUrl);
+    const schemas = new Map(
+      this.adminforth.openApi.registeredSchemas
+        .filter(isRegisteredToolSchema)
+        .filter((schema) => !readOnly || schema.agent?.onlyReadsData)
+        .map((schema) => [endpointPathToToolName(schema.path.slice(apiPrefix.length)), schema] as const),
+    );
+    const tools = Array.from(schemas.entries())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, schema]) => ({
+        name,
+        ...this.description(name, schema),
+        inputSchema: compactInputSchema(overrideInputSchema(schema.request_schema ?? {
+          type: 'object',
+          properties: {},
+          additionalProperties: true,
+        }, this.toolOverrides[name])) as Tool['inputSchema'],
+        ...(schema.agent?.onlyReadsData && {
+          annotations: { readOnlyHint: true },
+        }),
+        ...(schema.agent?.requiresHumanApproval && {
+          annotations: { destructiveHint: true },
+        }),
+      }));
+    return { schemas, tools };
   }
 
   private description(name: string, schema: RegisteredToolSchema): { description?: string } {
@@ -294,24 +310,8 @@ export class AdminForthApiTools {
     }
   }
 
-  list(readOnly: boolean): McpToolDefinition[] {
-    return Array.from(this.schemas(readOnly).entries())
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, schema]) => ({
-        name,
-        ...this.description(name, schema),
-        inputSchema: compactInputSchema(overrideInputSchema(schema.request_schema ?? {
-          type: 'object',
-          properties: {},
-          additionalProperties: true,
-        }, this.toolOverrides[name])),
-        ...(schema.agent?.onlyReadsData && {
-          annotations: { readOnlyHint: true },
-        }),
-        ...(schema.agent?.requiresHumanApproval && {
-          annotations: { destructiveHint: true },
-        }),
-      }));
+  list(readOnly: boolean): Tool[] {
+    return this.catalog(readOnly).tools;
   }
 
   async call(params: {
@@ -323,7 +323,7 @@ export class AdminForthApiTools {
     abortSignal: AbortSignal;
     readOnly: boolean;
   }): Promise<{ output: unknown; isError: boolean }> {
-    const schema = this.schemas(params.readOnly).get(params.name);
+    const schema = this.catalog(params.readOnly).schemas.get(params.name);
     if (!schema) {
       return { output: { error: `Unknown tool: ${params.name}` }, isError: true };
     }
@@ -354,7 +354,6 @@ export class AdminForthApiTools {
     }
 
     const response = createDirectResponse();
-    const language = String(params.headers['accept-language'] ?? 'en');
     const output = await this.withTimeout(params.abortSignal, (abortSignal) => schema.handler({
       body,
       query,
@@ -369,7 +368,7 @@ export class AdminForthApiTools {
       tr: (message, category, translationParams, pluralizationNumber) => this.adminforth.tr(
         message,
         category,
-        language,
+        params.headers['accept-language'],
         translationParams,
         pluralizationNumber,
       ),

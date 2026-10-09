@@ -1,61 +1,15 @@
 import { logger, type IAdminForthEndpointHandlerInput, type IHttpServer } from 'adminforth';
-import { OAUTH_PATHS, type McpOAuth } from '../oauth/authorizationServer.js';
+import express, { type Express } from 'express';
+import type { McpOAuth } from '../oauth/authorizationServer.js';
 import { OAuthError } from '../oauth/errors.js';
-import { MCP_PATH } from '../urls.js';
+import { resolveAuthorizationBodySchema, type ResolveAuthorizationBody } from '../schemas/oAuth.js';
+import { MCP_PATH, OAUTH_PATHS } from '../urls.js';
 
-const MAX_FORM_BODY_BYTES = 16 * 1024;
+const FORM_BODY_LIMIT = '16kb';
 
-interface RawRequest extends AsyncIterable<Buffer> {
-  body?: unknown;
-}
-
-interface RawResponse {
-  set(name: string, value: string): RawResponse;
-  status(code: number): RawResponse;
-  json(body: unknown): void;
-  redirect(status: number, url: string): void;
-}
-
-type RawHandler = (req: RawRequest, res: RawResponse) => Promise<void>;
-
-/**
- * Routes `server.endpoint()` cannot serve are added to the Express app: the token endpoint gets form bodies,
- * and RFC 8414 / RFC 9728 metadata lives at the host root, outside the AdminForth API prefix.
- */
-interface ExpressHttpServer extends IHttpServer {
-  expressApp: {
-    get(path: string, handler: RawHandler): void;
-    post(path: string, handler: RawHandler): void;
-  };
-}
-
-/**
- * RFC 6749 token requests are application/x-www-form-urlencoded. The host app may already have parsed the body
- * with its own urlencoded middleware; otherwise the stream is still unread.
- */
-async function readFormBody(req: RawRequest): Promise<Record<string, unknown>> {
-  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length) {
-    return req.body as Record<string, unknown>;
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > MAX_FORM_BODY_BYTES) {
-      throw new OAuthError('invalid_request', `Request body is larger than ${MAX_FORM_BODY_BYTES} bytes`);
-    }
-    chunks.push(chunk);
-  }
-  return Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString('utf8')));
-}
-
-async function oauthResponse(
-  input: IAdminForthEndpointHandlerInput,
-  handler: () => Promise<unknown>,
-): Promise<unknown> {
+async function oauthResponse<T>(input: IAdminForthEndpointHandlerInput, handler: () => Promise<T>) {
   try {
     const result = await handler();
-    // A handler that answered through the raw response returns null; headers can no longer be set then.
     if (result !== null) input.response.setHeader('Cache-Control', 'no-store');
     return result;
   } catch (error) {
@@ -66,7 +20,7 @@ async function oauthResponse(
   }
 }
 
-export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPrefix: string): void {
+export function registerOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPrefix: string): void {
   server.endpoint({
     method: 'GET',
     path: OAUTH_PATHS.protectedResourceMetadata,
@@ -106,7 +60,7 @@ export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPre
     noAuth: true,
     handler: async (input) => oauthResponse(input, async () => {
       const consentPageUrl = await oauth.authorize(input.query);
-      (input._raw_express_res as RawResponse).set('Cache-Control', 'no-store').redirect(302, consentPageUrl);
+      input._raw_express_res.set('Cache-Control', 'no-store').redirect(302, consentPageUrl);
       return null;
     }),
   });
@@ -126,22 +80,17 @@ export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPre
     agent: {
       hiddenFromAgents: true,
     },
-    handler: async (input) => oauthResponse(input, async () => ({
-      redirectUrl: await oauth.resolveAuthorization(
-        String(input.body.request),
-        input.body.approved === true,
-        input.adminUser,
-        input.body.readOnly === true,
-      ),
-    })),
+    request_schema: resolveAuthorizationBodySchema,
+    handler: async (input) => {
+      const body: ResolveAuthorizationBody = input.body;
+      return oauthResponse(input, async () => ({
+        redirectUrl: await oauth.resolveAuthorization(body.request, body.approved, input.adminUser, body.readOnly),
+      }));
+    },
   });
 
-  const { expressApp } = server as ExpressHttpServer;
+  const { expressApp } = server as IHttpServer & { expressApp: Express };
 
-  // MCP clients try the host-root well-known URLs first and stop at the first 200 response. The AdminForth SPA
-  // answers every unknown path with 200 HTML, so unless these are served the client fails before it reaches
-  // `<issuer>/.well-known/openid-configuration`. Behind a proxy that forwards only the AdminForth path they 404,
-  // and the client goes on to that URL.
   const mcpPath = `${apiPrefix}${MCP_PATH}`;
   expressApp.get(`/.well-known/oauth-protected-resource${mcpPath}`, async (_req, res) => {
     res.json(oauth.protectedResourceMetadata());
@@ -150,17 +99,21 @@ export function setupOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, apiPre
     res.json(oauth.authorizationServerMetadata());
   });
 
-  expressApp.post(`${apiPrefix}${OAUTH_PATHS.token}`, async (req, res) => {
-    res.set('Cache-Control', 'no-store');
-    try {
-      res.json(await oauth.exchangeToken(await readFormBody(req)));
-    } catch (error) {
-      if (error instanceof OAuthError) {
-        res.status(400).json(error.toResponseObject());
-        return;
+  expressApp.post(
+    `${apiPrefix}${OAUTH_PATHS.token}`,
+    express.urlencoded({ extended: false, limit: FORM_BODY_LIMIT }),
+    async (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      try {
+        res.json(await oauth.exchangeToken(req.body ?? {}));
+      } catch (error) {
+        if (error instanceof OAuthError) {
+          res.status(400).json(error.toResponseObject());
+          return;
+        }
+        logger.error(`AdminForthMcpPlugin: OAuth token request failed: ${(error as Error).stack ?? String(error)}`);
+        res.status(500).json({ error: 'server_error', error_description: 'Internal server error' });
       }
-      logger.error(`AdminForthMcpPlugin: OAuth token request failed: ${(error as Error).stack ?? String(error)}`);
-      res.status(500).json({ error: 'server_error', error_description: 'Internal server error' });
-    }
-  });
+    },
+  );
 }

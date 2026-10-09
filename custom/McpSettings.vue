@@ -68,8 +68,7 @@
       :header="$t('Connect an AI agent')"
       :buttons="dialogButtons"
     >
-      <!-- mounted once the list is loaded: ButtonGroup reads its buttons only on mount -->
-      <ButtonGroup v-if="oauthEnabled" v-model="activeClient">
+      <ButtonGroup v-model="activeClient">
         <template v-for="client in CLIENTS" :key="client" #[`button:${client}`]>
           <span class="px-4 py-2">{{ client }}</span>
         </template>
@@ -148,10 +147,7 @@ const { t } = useI18n();
 const coreStore = useCoreStore();
 const brandName = computed<string>(() => coreStore.config?.brandName);
 const activeClient = ref<Client>('Claude Code');
-// Without OAuth sign-in the agents connect only with auth secrets, so the dialog is the Other tab alone.
-const oauthEnabled = ref(false);
-// Built by the plugin from adminPanelOrigin: OAuth accepts tokens only for this exact URL. Without adminPanelOrigin
-// there is no OAuth and auth secrets do not check the URL, so the address this page was opened at is shown.
+// Built by the plugin from adminPanelOrigin: OAuth accepts tokens only for this exact URL.
 const mcpUrl = ref('');
 
 const authSecrets = ref<AuthSecret[]>([]);
@@ -208,10 +204,6 @@ const dialogButtons = computed(() => {
 
 const createdSecretReadOnly = computed(() => serverReadOnly.value || secretReadOnly.value);
 
-function fallbackMcpUrl() {
-  const baseUrl = (import.meta.env.VITE_ADMINFORTH_PUBLIC_PATH || '').replace(/\/$/, '');
-  return `${window.location.origin}${baseUrl}/adminapi/v1/mcp`;
-}
 // Name the MCP server is registered under in the agent, e.g. `claude mcp add ... my-admin <url>`.
 // A brand name of non-Latin letters only leaves an empty slug, hence the default.
 const serverName = computed(() => brandName.value
@@ -261,9 +253,7 @@ async function loadAuthSecrets() {
     const response = await callAdminForthApi({ method: 'GET', path: '/mcp/auth-secrets' });
     if (response) {
       authSecrets.value = response.authSecrets;
-      if (!response.oauthEnabled) activeClient.value = 'Other';
-      oauthEnabled.value = response.oauthEnabled;
-      mcpUrl.value = response.mcpUrl ?? fallbackMcpUrl();
+      mcpUrl.value = response.mcpUrl;
       serverReadOnly.value = response.serverReadOnly;
     }
   } finally {

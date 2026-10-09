@@ -47,7 +47,7 @@ export function readMcpClient(
     return { client, ver: normalizeClientVersion(clientInfo.version) };
   }
 
-  return parseUserAgent(String(headers['user-agent'] ?? '')) ?? {
+  return parseUserAgent(headers['user-agent'] ?? '') ?? {
     client: UNKNOWN_CLIENT,
     ver: null,
   };

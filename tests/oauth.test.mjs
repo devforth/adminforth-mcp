@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import https from 'node:https';
 import { McpAuthSecretStore } from '../dist/authSecretStore.js';
+import { AuthSecretRepository } from '../dist/repositories/authSecret.js';
 import { McpOAuth } from '../dist/oauth/authorizationServer.js';
-import { fetchClientMetadata, isSpecialPurposeAddress, redirectUriMatches } from '../dist/oauth/clientMetadata.js';
+import { fetchClientMetadata, isSpecialPurposeAddress } from '../dist/oauth/clientMetadata.js';
+import { redirectUriMatches } from '../dist/oauth/redirectUris.js';
 import { createMcpUrls } from '../dist/urls.js';
 
 const options = {
@@ -80,7 +82,7 @@ function setup({ serverReadOnly = false } = {}) {
       return { ok: true };
     },
   };
-  const store = new McpAuthSecretStore(adminforth, options);
+  const store = new McpAuthSecretStore(adminforth, new AuthSecretRepository(adminforth, options));
   const oauth = new McpOAuth(adminforth, store, createMcpUrls('https://admin.example', '/admin'), [DEV_CLIENT, CLAUDE_CLIENT], serverReadOnly);
   const adminUser = { pk: 'user-1', username: 'owner@example.com', dbUser: userRecord };
   const signedRequest = adminforth.auth.issueJWT({

@@ -1,8 +1,8 @@
 # AdminForth MCP
 
-`@adminforth/mcp` exposes the AdminForth API tool surface as an authenticated remote MCP server. Each MCP auth secret belongs to one AdminForth user, so resource permissions and hooks are preserved.
+`@adminforth/mcp` exposes the AdminForth API tool surface as an authenticated remote MCP server. Agents connect through OAuth sign-in or with an auth secret, and act as the AdminForth user who connected them, so resource permissions and hooks are preserved.
 
-The server identifies itself to agents using the configured AdminForth `brandName`. An optional `adminPanelOrigin` can distinguish deployments further; the plugin combines it with the AdminForth `baseUrl`.
+The required `adminPanelOrigin` is the public origin agents connect to; the plugin combines it with the AdminForth `baseUrl` to build the MCP URL and the OAuth issuer.
 
 > **Security:** an MCP auth secret carries the full permissions of the user who created it. An agent
 > holding it can do everything that user can do in the admin panel, including destructive actions and

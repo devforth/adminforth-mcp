@@ -2,14 +2,13 @@ import dns from 'node:dns';
 import https from 'node:https';
 import net from 'node:net';
 import { logger } from 'adminforth';
-import { OAuthError } from './errors.js';
+import { clientMetadataDocumentSchema } from '../schemas/oAuth.js';
 import type { McpOAuthClient } from '../types.js';
+import { OAuthError } from './errors.js';
 
 const MAX_DOCUMENT_BYTES = 5 * 1024;
 const FETCH_TIMEOUT_MS = 5000;
-// client_name is shown on the consent page and stored as the connection name.
 const MAX_CLIENT_NAME_LENGTH = 100;
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 const specialPurposeAddresses = new net.BlockList();
 [
@@ -63,25 +62,6 @@ export function isClientIdUrl(clientId: string): boolean {
     && !url.hostname.startsWith('[');
 }
 
-export function isLoopbackUrl(url: URL): boolean {
-  return url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname);
-}
-
-/** Native clients listen on a random loopback port, so RFC 8252 lets the port differ from the registered one. */
-export function redirectUriMatches(requested: URL, registered: string): boolean {
-  const registeredUrl = new URL(registered);
-  if (!isLoopbackUrl(registeredUrl)) return requested.href === registeredUrl.href;
-  return requested.protocol === registeredUrl.protocol
-    && requested.hostname === registeredUrl.hostname
-    && requested.pathname === registeredUrl.pathname
-    && requested.search === registeredUrl.search
-    && requested.hash === registeredUrl.hash;
-}
-
-export function isAllowedRedirectUri(redirectUri: URL): boolean {
-  return redirectUri.protocol === 'https:' || isLoopbackUrl(redirectUri);
-}
-
 function fetchJson(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const request = https.get(url, {
@@ -127,9 +107,9 @@ function fetchJson(url: string): Promise<unknown> {
  * that passed isClientIdUrl.
  */
 export async function fetchClientMetadata(clientId: string): Promise<McpOAuthClient> {
-  let document: any;
+  let fetched: unknown;
   try {
-    document = await fetchJson(clientId);
+    fetched = await fetchJson(clientId);
   } catch (error) {
     // The reason stays in the log: resolved addresses, HTTP statuses and parse errors quoting the response
     // would tell whoever chose the client_id what this server can reach.
@@ -137,18 +117,14 @@ export async function fetchClientMetadata(clientId: string): Promise<McpOAuthCli
     throw new OAuthError('invalid_client', 'Could not fetch the client metadata document');
   }
 
-  if (
-    typeof document?.client_name !== 'string'
-    || !Array.isArray(document.redirect_uris)
-    || !document.redirect_uris.length
-    || !document.redirect_uris.every((uri: unknown) => typeof uri === 'string' && URL.canParse(uri))
-    || document.token_endpoint_auth_method !== 'none'
-  ) {
+  const parsed = clientMetadataDocumentSchema.safeParse(fetched);
+  if (!parsed.success) {
     throw new OAuthError(
       'invalid_client',
-      'Client metadata document must have client_name, redirect_uris and token_endpoint_auth_method "none"',
+      'Client metadata document must have client_id, client_name, redirect_uris and token_endpoint_auth_method "none"',
     );
   }
+  const document = parsed.data;
   if (document.client_id !== clientId) {
     throw new OAuthError('invalid_client', 'client_id in the client metadata document does not match its URL');
   }

@@ -1,16 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { AdminUser, IAdminForth } from 'adminforth';
 import type { McpAuthSecretStore } from '../authSecretStore.js';
-import {
-  fetchClientMetadata,
-  isAllowedRedirectUri,
-  isClientIdUrl,
-  isLoopbackUrl,
-  redirectUriMatches,
-} from './clientMetadata.js';
-import { OAuthError } from './errors.js';
 import type { McpOAuthClient } from '../types.js';
-import { MCP_PATH, type McpUrls } from '../urls.js';
+import { CONSENT_PAGE_PATH, OAUTH_PATHS, type McpUrls } from '../urls.js';
+import { fetchClientMetadata, isClientIdUrl } from './clientMetadata.js';
+import { OAuthError } from './errors.js';
+import { isAllowedRedirectUri, isLoopbackUrl, redirectUriMatches } from './redirectUris.js';
 
 const REQUEST_JWT_TYPE = 'mcp-oauth-request';
 const CODE_JWT_TYPE = 'mcp-oauth-code';
@@ -19,23 +14,8 @@ const REFRESH_TOKEN_JWT_TYPE = 'mcp-oauth-refresh';
 const REQUEST_TTL = '10m';
 const CODE_TTL = '5m';
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
-// Every refresh issues a new token, so a connection expires only after this long without use.
 const REFRESH_TOKEN_TTL = '7d';
 const CLIENT_METADATA_TTL_MS = 10 * 60 * 1000;
-
-/** Endpoint paths relative to the AdminForth API prefix (`<baseUrl>/adminapi/v1`). */
-export const OAUTH_PATHS = {
-  protectedResourceMetadata: `${MCP_PATH}/oauth-protected-resource`,
-  // Clients derive authorization server metadata URL from the issuer; for an issuer with a path, the
-  // OpenID Connect Discovery form `<issuer>/.well-known/openid-configuration` is the only one not at the host root,
-  // so it works behind a proxy that forwards only the AdminForth path. The host-root forms are in oauthEndpoints.ts.
-  authorizationServerMetadata: `${MCP_PATH}/.well-known/openid-configuration`,
-  jwks: `${MCP_PATH}/oauth/jwks`,
-  authorize: `${MCP_PATH}/oauth/authorize`,
-  token: `${MCP_PATH}/oauth/token`,
-  authorization: `${MCP_PATH}/oauth/authorization`,
-};
-export const CONSENT_PAGE_PATH = '/mcp-authorize';
 
 interface AuthorizationRequest {
   clientId: string;

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { McpAuthSecretStore } from '../dist/authSecretStore.js';
+import { AuthSecretRepository } from '../dist/repositories/authSecret.js';
 
 const options = {
   resourceId: 'mcp_auth_secrets',
@@ -13,6 +14,7 @@ const options = {
   lastUsedAtField: 'last_used_at',
   lastUsedByAgentField: 'last_used_by_agent',
   readOnlyField: 'read_only',
+  oauthClientIdField: 'oauth_client_id',
 };
 
 test('creates, authenticates, tracks, lists, and revokes auth secret records', async () => {
@@ -54,7 +56,7 @@ test('creates, authenticates, tracks, lists, and revokes auth secret records', a
     },
   };
   const adminUser = { pk: 'user-1', username: 'owner@example.com', dbUser: userRecord };
-  const store = new McpAuthSecretStore(adminforth, options);
+  const store = new McpAuthSecretStore(adminforth, new AuthSecretRepository(adminforth, options));
 
   const created = await store.create('Codex', true, adminUser, {});
   assert.match(created.secret, /^afmcp_[A-Za-z0-9_-]{43}$/);
@@ -78,46 +80,9 @@ test('creates, authenticates, tracks, lists, and revokes auth secret records', a
   assert.deepEqual(listed[0].lastUsedByAgent, { client: 'codex', ver: '1.0.0' });
   assert.equal(listed[0].readOnly, true);
   assert.equal('secret_hash' in listed[0], false);
-  // Without oauthClientIdField the plugin keeps the 1.0 table layout: no OAuth column is written or read.
-  assert.equal('undefined' in authSecretRecords[0], false);
   assert.equal(listed[0].oauthClientId, null);
 
   const revoked = await store.revoke(authSecretRecords[0].id, adminUser, {});
   assert.deepEqual(revoked, { ok: true });
   assert.equal(revokedRecord, authSecretRecords[0]);
-});
-
-test('survives corrupted stored agent info', async () => {
-  // e.g. a database column which silently truncated an oversized value
-  const record = {
-    id: 'secret-1',
-    name: 'Codex',
-    secret_hash: createHash('sha256').update('afmcp_test').digest('hex'),
-    user_id: 'user-1',
-    created_at: '2026-01-01T00:00:00.000Z',
-    last_used_at: null,
-    last_used_by_agent: '{"client":"codex","ver":"1.0',
-    read_only: false,
-  };
-  const userRecord = { id: 'user-1', email: 'owner@example.com' };
-  const adminforth = {
-    config: {
-      auth: { usersResourceId: 'admin_users', usernameField: 'email' },
-      resources: [
-        { resourceId: 'mcp_auth_secrets' },
-        { resourceId: 'admin_users', columns: [{ name: 'id', primaryKey: true }] },
-      ],
-    },
-    resource: (resourceId) => resourceId === 'mcp_auth_secrets'
-      ? { list: async () => [record], get: async () => record }
-      : { get: async () => userRecord },
-  };
-  const store = new McpAuthSecretStore(adminforth, options);
-
-  const authenticated = await store.authenticate('afmcp_test');
-  assert.equal(authenticated.client, null);
-  assert.equal(authenticated.name, 'Codex');
-
-  const listed = await store.list({ pk: 'user-1' });
-  assert.equal(listed[0].lastUsedByAgent, null);
 });

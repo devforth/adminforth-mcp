@@ -10,6 +10,7 @@ export const SECRET_OPTIONS = {
   lastUsedAtField: 'last_used_at',
   lastUsedByAgentField: 'last_used_by_agent',
   readOnlyField: 'read_only',
+  oauthClientIdField: 'oauth_client_id',
 };
 
 function matches(record, filter) {
@@ -21,13 +22,12 @@ function matches(record, filter) {
  * Activates the plugin against an in-memory AdminForth: `records` is the auth secret table, `users` the users
  * table, JWTs are opaque keys of `jwts`. Endpoints and raw Express routes are collected by method and path.
  */
-export function createPlugin({ oauth = true, adminPanelOrigin = 'https://admin.example', users } = {}) {
+export function createPlugin({ adminPanelOrigin = 'https://admin.example', users, expressApp } = {}) {
   const records = [];
   const userRecords = users ?? [{ id: 'user-1', email: 'owner@example.com' }, { id: 'user-2', email: 'other@example.com' }];
   const jwts = new Map();
   const authorizedUsers = [];
-  const columns = [...Object.values(SECRET_OPTIONS).slice(1), ...(oauth ? ['oauth_client_id'] : [])]
-    .map((name) => ({ name, primaryKey: name === 'id' }));
+  const columns = Object.values(SECRET_OPTIONS).slice(1).map((name) => ({ name, primaryKey: name === 'id' }));
   const adminforth = {
     config: {
       baseUrl: '',
@@ -66,8 +66,8 @@ export function createPlugin({ oauth = true, adminPanelOrigin = 'https://admin.e
   };
 
   const plugin = new AdminForthMcpPlugin({
-    ...(adminPanelOrigin && { adminPanelOrigin }),
-    authSecretResource: { ...SECRET_OPTIONS, ...(oauth && { oauthClientIdField: 'oauth_client_id' }) },
+    adminPanelOrigin,
+    authSecretResource: SECRET_OPTIONS,
   });
   plugin.modifyGlobalConfig(adminforth);
 
@@ -75,26 +75,29 @@ export function createPlugin({ oauth = true, adminPanelOrigin = 'https://admin.e
   const rawRoutes = new Map();
   plugin.setupEndpoints({
     endpoint: (options) => endpoints.set(`${options.method} ${options.path}`, options),
-    expressApp: {
-      get: (path, handler) => rawRoutes.set(`GET ${path}`, handler),
-      post: (path, handler) => rawRoutes.set(`POST ${path}`, handler),
+    expressApp: expressApp ?? {
+      get: (path, ...handlers) => rawRoutes.set(`GET ${path}`, handlers.at(-1)),
+      post: (path, ...handlers) => rawRoutes.set(`POST ${path}`, handlers.at(-1)),
     },
   });
 
-  /** Calls the MCP endpoint with an Authorization header and returns its status, headers and body. */
+  /** Calls the MCP endpoint with an Authorization header and returns its status and headers. */
   async function callMcp(authorization) {
     const headers = new Map();
     let status = 200;
-    const body = await endpoints.get('POST /mcp').handler({
+    await endpoints.get('POST /mcp').handler({
       body: { jsonrpc: '2.0', id: 1, method: 'ping' },
-      headers: authorization ? { authorization } : {},
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        ...(authorization && { authorization }),
+      },
       query: {},
       cookies: [],
       requestUrl: '/adminapi/v1/mcp',
       response: { setHeader: (name, value) => headers.set(name, value), setStatus: (code) => { status = code; } },
-      _raw_express_res: { status: () => ({ end: () => {} }) },
     });
-    return { status, headers, body };
+    return { status, headers };
   }
 
   return { plugin, adminforth, records, jwts, authorizedUsers, endpoints, rawRoutes, callMcp };

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
-import type { McpToolDefinition } from './apiTools.js';
+import type { Tool } from '@modelcontextprotocol/server';
 
 export const FETCH_SKILL_TOOL_NAME = 'fetch_skill';
 const INSTRUCTIONS_FILE_NAME = 'instructions.md';
@@ -72,7 +72,7 @@ export class McpSkills {
     ].join('\n\n');
   }
 
-  toolDefinition(): McpToolDefinition {
+  toolDefinition(): Tool {
     return {
       name: FETCH_SKILL_TOOL_NAME,
       description: `Returns the detailed rules of a skill for working with this admin panel. Load the matching skill before the task. Skills: ${Array.from(this.skills.keys()).join(', ')}.`,
