@@ -2,8 +2,8 @@ import dns from 'node:dns';
 import https from 'node:https';
 import net from 'node:net';
 import { logger } from 'adminforth';
-import { OAuthError } from './oauthError.js';
-import type { McpOAuthClient } from './types.js';
+import { OAuthError } from './errors.js';
+import type { McpOAuthClient } from '../types.js';
 
 const MAX_DOCUMENT_BYTES = 5 * 1024;
 const FETCH_TIMEOUT_MS = 5000;

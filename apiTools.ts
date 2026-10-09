@@ -1,4 +1,4 @@
-import { compactInputSchema } from './inputSchema.js';
+import { compactInputSchema } from './compactInputSchema.js';
 import type { McpPageSize } from './types.js';
 import { adminApiPrefix } from './urls.js';
 import { AdminForthDataTypes } from 'adminforth';

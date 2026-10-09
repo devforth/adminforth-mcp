@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compactInputSchema } from '../dist/inputSchema.js';
+import { compactInputSchema } from '../dist/compactInputSchema.js';
 
 test('drops title and examples at any depth and keeps description', () => {
   assert.deepEqual(compactInputSchema({

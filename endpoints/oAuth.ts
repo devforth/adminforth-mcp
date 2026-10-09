@@ -1,7 +1,7 @@
 import { logger, type IAdminForthEndpointHandlerInput, type IHttpServer } from 'adminforth';
-import { OAUTH_PATHS, type McpOAuth } from './oauth.js';
-import { OAuthError } from './oauthError.js';
-import { MCP_PATH } from './urls.js';
+import { OAUTH_PATHS, type McpOAuth } from '../oauth/authorizationServer.js';
+import { OAuthError } from '../oauth/errors.js';
+import { MCP_PATH } from '../urls.js';
 
 const MAX_FORM_BODY_BYTES = 16 * 1024;
 

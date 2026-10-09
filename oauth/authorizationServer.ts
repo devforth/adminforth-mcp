@@ -1,16 +1,16 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { AdminUser, IAdminForth } from 'adminforth';
-import type { McpAuthSecretStore } from './authSecretStore.js';
+import type { McpAuthSecretStore } from '../authSecretStore.js';
 import {
   fetchClientMetadata,
   isAllowedRedirectUri,
   isClientIdUrl,
   isLoopbackUrl,
   redirectUriMatches,
-} from './oauthClientMetadata.js';
-import { OAuthError } from './oauthError.js';
-import type { McpOAuthClient } from './types.js';
-import { MCP_PATH, type McpUrls } from './urls.js';
+} from './clientMetadata.js';
+import { OAuthError } from './errors.js';
+import type { McpOAuthClient } from '../types.js';
+import { MCP_PATH, type McpUrls } from '../urls.js';
 
 const REQUEST_JWT_TYPE = 'mcp-oauth-request';
 const CODE_JWT_TYPE = 'mcp-oauth-code';

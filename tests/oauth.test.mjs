@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import https from 'node:https';
 import { McpAuthSecretStore } from '../dist/authSecretStore.js';
-import { McpOAuth } from '../dist/oauth.js';
-import { fetchClientMetadata, isSpecialPurposeAddress, redirectUriMatches } from '../dist/oauthClientMetadata.js';
+import { McpOAuth } from '../dist/oauth/authorizationServer.js';
+import { fetchClientMetadata, isSpecialPurposeAddress, redirectUriMatches } from '../dist/oauth/clientMetadata.js';
 import { createMcpUrls } from '../dist/urls.js';
 
 const options = {
