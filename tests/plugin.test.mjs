@@ -12,22 +12,34 @@ function addGrant(records, { id = 'grant-1', userId = 'user-1', clientId = CLIEN
 }
 
 const MCP_URL = 'https://admin.example/adminapi/v1/mcp';
+const OWNER = { pk: 'user-1', username: 'owner@example.com' };
+const SSE_DATA_RE = /^data: (.+)$/m;
+const TOOL_SCHEMAS = [
+  { method: 'GET', path: '/adminapi/v1/get_resource', agent: { onlyReadsData: true }, handler: async () => ({}) },
+  { method: 'POST', path: '/adminapi/v1/delete_record', agent: { requiresHumanApproval: true }, handler: async () => ({}) },
+];
 
 function accessToken(adminforth, payload) {
   return `Bearer ${adminforth.auth.issueJWT({ aud: MCP_URL, ...payload }, 'mcp-oauth-access')}`;
 }
 
-async function createSecret(endpoints) {
+async function createSecret(endpoints, adminUser = OWNER) {
   const response = { setHeader: () => {}, setStatus: () => {} };
   const { secret } = await endpoints.get('POST /mcp/auth-secrets').handler({
     body: { name: 'Codex', readOnly: false },
-    adminUser: { pk: 'user-1', username: 'owner@example.com' },
+    adminUser,
     headers: {},
     query: {},
     cookies: [],
     response,
   });
   return secret;
+}
+
+async function listTools(callMcp, secret) {
+  const { headers, message } = await callMcp(`Bearer ${secret}`, { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+  const json = headers.get('content-type').startsWith('text/event-stream') ? message.match(SSE_DATA_RE)[1] : message;
+  return JSON.parse(json).result.tools.map((tool) => tool.name);
 }
 
 test('authenticates an OAuth access token of an existing grant as the grant user', async () => {
@@ -155,4 +167,25 @@ test('requires the oauthClientIdField column in the auth secret resource', () =>
     codeInjector: { srcFoldersToSync: {}, allComponentNames: {} },
   };
   assert.throws(() => plugin.modifyGlobalConfig(adminforth), /column "oauth_client_id" not found/);
+});
+
+test('applies a readOnly function to the user of every request', async () => {
+  const writers = new Set(['user-2']);
+  const other = { pk: 'user-2', username: 'other@example.com' };
+  const { endpoints, records, callMcp } = createPlugin({
+    readOnly: async ({ adminUser }) => !writers.has(adminUser.pk),
+    registeredSchemas: TOOL_SCHEMAS,
+  });
+
+  const settings = endpoints.get('GET /mcp/auth-secrets');
+  assert.equal((await settings.handler({ adminUser: OWNER })).serverReadOnly, true);
+  assert.equal((await settings.handler({ adminUser: other })).serverReadOnly, false);
+
+  await createSecret(endpoints);
+  const secret = await createSecret(endpoints, other);
+  assert.deepEqual(records.map((record) => record.read_only), [true, false]);
+
+  assert.deepEqual(await listTools(callMcp, secret), ['delete_record', 'get_resource', 'fetch_skill']);
+  writers.delete('user-2');
+  assert.deepEqual(await listTools(callMcp, secret), ['get_resource', 'fetch_skill']);
 });

@@ -1,5 +1,6 @@
 import { logger, type IAdminForth } from 'adminforth';
 import type { McpAuthSecretStore } from '../authSecretStore.js';
+import type { ServerReadOnly } from '../serverReadOnly.js';
 import type { PluginOptions } from '../types.js';
 import { CONSENT_PAGE_PATH, type McpUrls } from '../urls.js';
 import { McpOAuth } from './authorizationServer.js';
@@ -11,6 +12,7 @@ export function setupOAuth(
   urls: McpUrls,
   options: PluginOptions,
   consentPageFile: string,
+  serverReadOnly: ServerReadOnly,
 ): McpOAuth {
   // OAuth sends codes and tokens through these endpoints, so they must be served over TLS (RFC 6749 §3.1);
   // plain http is left for a local admin panel.
@@ -39,6 +41,6 @@ export function setupOAuth(
     authSecretStore,
     urls,
     isProduction ? [] : options.devOAuthClients,
-    options.readOnly,
+    serverReadOnly,
   );
 }

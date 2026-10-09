@@ -5,6 +5,7 @@ import https from 'node:https';
 import { McpAuthSecretStore } from '../dist/authSecretStore.js';
 import { AuthSecretRepository } from '../dist/repositories/authSecret.js';
 import { McpOAuth } from '../dist/oauth/authorizationServer.js';
+import { createServerReadOnly } from '../dist/serverReadOnly.js';
 import { fetchClientMetadata, isSpecialPurposeAddress } from '../dist/oauth/clientMetadata.js';
 import { redirectUriMatches } from '../dist/oauth/redirectUris.js';
 import { createMcpUrls } from '../dist/urls.js';
@@ -34,7 +35,7 @@ function matches(record, filter) {
 const DEV_CLIENT = { clientId: 'local-test', clientName: 'Local test', redirectUris: ['http://127.0.0.1/callback'] };
 const CLAUDE_CLIENT = { clientId: CLIENT_ID, clientName: 'Claude Code', redirectUris: ['http://127.0.0.1/callback'] };
 
-function setup({ serverReadOnly = false } = {}) {
+function setup({ readOnly = false } = {}) {
   const records = [];
   const users = { 'user-1': { id: 'user-1', email: 'owner@example.com' } };
   const userRecord = users['user-1'];
@@ -83,7 +84,7 @@ function setup({ serverReadOnly = false } = {}) {
     },
   };
   const store = new McpAuthSecretStore(adminforth, new AuthSecretRepository(adminforth, options));
-  const oauth = new McpOAuth(adminforth, store, createMcpUrls('https://admin.example', '/admin'), [DEV_CLIENT, CLAUDE_CLIENT], serverReadOnly);
+  const oauth = new McpOAuth(adminforth, store, createMcpUrls('https://admin.example', '/admin'), [DEV_CLIENT, CLAUDE_CLIENT], createServerReadOnly(readOnly));
   const adminUser = { pk: 'user-1', username: 'owner@example.com', dbUser: userRecord };
   const signedRequest = adminforth.auth.issueJWT({
     clientId: CLIENT_ID,
@@ -114,7 +115,7 @@ test('publishes metadata under the MCP endpoint path', () => {
 
 test('describes and denies an authorization request', async () => {
   const { oauth, adminUser, signedRequest } = setup();
-  assert.deepEqual(await oauth.describeAuthorization(signedRequest), {
+  assert.deepEqual(await oauth.describeAuthorization(signedRequest, adminUser), {
     clientName: 'Claude Code',
     clientHost: 'client.example',
     redirectHost: '127.0.0.1:51234',
@@ -212,7 +213,7 @@ test('matches loopback redirect URIs on any port and others exactly', () => {
 });
 
 test('authorizes a configured client without fetching its metadata document', async () => {
-  const { oauth, jwtSecrets } = setup();
+  const { oauth, adminUser, jwtSecrets } = setup();
   const authorizeQuery = {
     response_type: 'code',
     client_id: 'local-test',
@@ -226,7 +227,7 @@ test('authorizes a configured client without fetching its metadata document', as
   assert.equal(consentPageUrl.origin + consentPageUrl.pathname, 'https://admin.example/admin/mcp-authorize');
   const request = jwtSecrets.get(consentPageUrl.searchParams.get('request'));
   assert.equal(request.redirectUri, 'http://127.0.0.1:5555/callback');
-  assert.deepEqual(await oauth.describeAuthorization(consentPageUrl.searchParams.get('request')), {
+  assert.deepEqual(await oauth.describeAuthorization(consentPageUrl.searchParams.get('request'), adminUser), {
     clientName: 'Local test',
     clientHost: null,
     redirectHost: '127.0.0.1:5555',
@@ -251,7 +252,7 @@ test('checks redirect_uri against the client metadata on the consent page, befor
   }));
   const signedRequest = consentPageUrl.searchParams.get('request');
 
-  await assert.rejects(oauth.describeAuthorization(signedRequest), { code: 'invalid_request' });
+  await assert.rejects(oauth.describeAuthorization(signedRequest, adminUser), { code: 'invalid_request' });
   await assert.rejects(oauth.resolveAuthorization(signedRequest, true, adminUser), { code: 'invalid_request' });
   await assert.rejects(oauth.resolveAuthorization(signedRequest, false, adminUser), { code: 'invalid_request' });
 });
@@ -526,7 +527,7 @@ async function connectionOf(oauth, store, tokens) {
 
 test('stores the read-only choice made on the consent page in the connection', async () => {
   const { records, store, oauth, adminUser, signedRequest } = setup();
-  assert.equal((await oauth.describeAuthorization(signedRequest)).serverReadOnly, false);
+  assert.equal((await oauth.describeAuthorization(signedRequest, adminUser)).serverReadOnly, false);
 
   const full = await connectWithAccess(oauth, signedRequest, adminUser, false);
   const readOnly = await connectWithAccess(oauth, signedRequest, adminUser, true);
@@ -537,11 +538,25 @@ test('stores the read-only choice made on the consent page in the connection', a
 });
 
 test('makes every OAuth connection read-only with the plugin readOnly option', async () => {
-  const { records, store, oauth, adminUser, signedRequest } = setup({ serverReadOnly: true });
-  assert.equal((await oauth.describeAuthorization(signedRequest)).serverReadOnly, true);
+  const { records, store, oauth, adminUser, signedRequest } = setup({ readOnly: true });
+  assert.equal((await oauth.describeAuthorization(signedRequest, adminUser)).serverReadOnly, true);
 
   const tokens = await connectWithAccess(oauth, signedRequest, adminUser, false);
 
   assert.equal(records[0].read_only, true);
   assert.equal((await connectionOf(oauth, store, tokens)).readOnly, true);
+});
+
+test('applies a readOnly function to the user on the consent page', async () => {
+  const readOnlyFor = (userPk) => async ({ adminUser }) => adminUser.pk === userPk;
+  const owner = setup({ readOnly: readOnlyFor('user-1') });
+  const other = setup({ readOnly: readOnlyFor('user-2') });
+  assert.equal((await owner.oauth.describeAuthorization(owner.signedRequest, owner.adminUser)).serverReadOnly, true);
+  assert.equal((await other.oauth.describeAuthorization(other.signedRequest, other.adminUser)).serverReadOnly, false);
+
+  await connectWithAccess(owner.oauth, owner.signedRequest, owner.adminUser, false);
+  await connectWithAccess(other.oauth, other.signedRequest, other.adminUser, false);
+
+  assert.equal(owner.records[0].read_only, true);
+  assert.equal(other.records[0].read_only, false);
 });

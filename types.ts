@@ -1,4 +1,4 @@
-import type { PluginsCommonOptions } from 'adminforth';
+import type { AdminUser, PluginsCommonOptions } from 'adminforth';
 
 export interface McpAuthSecretResourceOptions {
   resourceId: string;
@@ -50,10 +50,11 @@ export interface PluginOptions extends PluginsCommonOptions {
    */
   toolCallsPerRequest?: number;
   /**
-   * Expose only endpoints marked with `agent: { onlyReadsData: true }` to every auth secret.
+   * Expose only endpoints marked with `agent: { onlyReadsData: true }`: with true to every auth secret, with a function
+   * to the auth secrets of users it returns true for, checked on every MCP request.
    * Without it, read-only mode is chosen per auth secret.
    */
-  readOnly?: boolean;
+  readOnly?: boolean | ((input: { adminUser: AdminUser }) => boolean | Promise<boolean>);
 }
 
 export interface McpClientInfo {

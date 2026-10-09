@@ -7,13 +7,14 @@ import {
   type CreateAuthSecretBody,
   type RevokeAuthSecretBody,
 } from '../schemas/settings.js';
+import type { ServerReadOnly } from '../serverReadOnly.js';
 import { MCP_PATH } from '../urls.js';
 
 export function registerSettingsEndpoints(
   server: IHttpServer,
   authSecretStore: McpAuthSecretStore,
   mcpUrl: string,
-  serverReadOnly: boolean,
+  serverReadOnly: ServerReadOnly,
 ): void {
   server.endpoint({
     method: 'GET',
@@ -24,7 +25,7 @@ export function registerSettingsEndpoints(
     handler: async ({ adminUser }) => ({
       authSecrets: await authSecretStore.list(adminUser),
       mcpUrl,
-      serverReadOnly,
+      serverReadOnly: await serverReadOnly(adminUser),
     }),
   });
 
@@ -39,7 +40,7 @@ export function registerSettingsEndpoints(
       const body: CreateAuthSecretBody = input.body;
       return authSecretStore.create(
         body.name,
-        serverReadOnly || body.readOnly,
+        body.readOnly || await serverReadOnly(input.adminUser),
         input.adminUser,
         requestExtra(input),
       );

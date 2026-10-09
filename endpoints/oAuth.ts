@@ -71,7 +71,7 @@ export function registerOAuthEndpoints(server: IHttpServer, oauth: McpOAuth, api
     agent: {
       hiddenFromAgents: true,
     },
-    handler: async (input) => oauthResponse(input, () => oauth.describeAuthorization(String(input.query.request))),
+    handler: async (input) => oauthResponse(input, () => oauth.describeAuthorization(String(input.query.request), input.adminUser)),
   });
 
   server.endpoint({

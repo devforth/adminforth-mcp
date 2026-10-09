@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { AdminUser, IAdminForth } from 'adminforth';
 import type { McpAuthSecretStore } from '../authSecretStore.js';
+import type { ServerReadOnly } from '../serverReadOnly.js';
 import type { McpOAuthClient } from '../types.js';
 import { CONSENT_PAGE_PATH, OAUTH_PATHS, type McpUrls } from '../urls.js';
 import { fetchClientMetadata, isClientIdUrl } from './clientMetadata.js';
@@ -82,14 +83,15 @@ export class McpOAuth {
 
   /**
    * `configuredClients` are trusted as is, without fetching their client metadata documents. `serverReadOnly` is
-   * the plugin readOnly option: it makes every connection read-only, whatever the user chooses on the consent page.
+   * the plugin readOnly option for a user: it makes the connections of that user read-only, whatever they choose on
+   * the consent page.
    */
   constructor(
     private readonly adminforth: IAdminForth,
     private readonly store: McpAuthSecretStore,
     urls: McpUrls,
     configuredClients: McpOAuthClient[] = [],
-    private readonly serverReadOnly = false,
+    private readonly serverReadOnly: ServerReadOnly,
   ) {
     this.configuredClients = new Map(configuredClients.map((client) => [client.clientId, client]));
     this.apiUrl = urls.apiUrl;
@@ -161,7 +163,7 @@ export class McpOAuth {
   }
 
   /** What the consent page shows about a pending authorization request. */
-  async describeAuthorization(signedRequest: string) {
+  async describeAuthorization(signedRequest: string, adminUser: AdminUser) {
     const { request, client, redirectUrl } = await this.verifyAuthorizationRequest(signedRequest);
     return {
       clientName: client.clientName,
@@ -169,7 +171,7 @@ export class McpOAuth {
       clientHost: URL.parse(request.clientId)?.host ?? null,
       redirectHost: redirectUrl.host,
       loopbackRedirect: isLoopbackUrl(redirectUrl),
-      serverReadOnly: this.serverReadOnly,
+      serverReadOnly: await this.serverReadOnly(adminUser),
     };
   }
 
@@ -193,7 +195,7 @@ export class McpOAuth {
         clientName: client.clientName,
         redirectUri: request.redirectUri,
         codeChallenge: request.codeChallenge,
-        readOnly: this.serverReadOnly || readOnly,
+        readOnly: readOnly || await this.serverReadOnly(adminUser),
       };
       url.searchParams.set('code', this.adminforth.auth.issueJWT(code, CODE_JWT_TYPE, CODE_TTL));
     } else {

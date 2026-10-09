@@ -18,6 +18,7 @@ import { AuthSecretRepository } from './repositories/authSecret.js';
 import type { McpOAuth } from './oauth/authorizationServer.js';
 import { setupOAuth } from './oauth/setup.js';
 import { requestExtra } from './requestExtra.js';
+import { createServerReadOnly, type ServerReadOnly } from './serverReadOnly.js';
 import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
 import type { PluginOptions } from './types.js';
 import { adminApiPrefix, createMcpUrls, type McpUrls } from './urls.js';
@@ -58,10 +59,12 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   private skills!: McpSkills;
   private urls!: McpUrls;
   private readonly protocol = new McpProtocol();
+  private readonly serverReadOnly: ServerReadOnly;
 
   constructor(options: PluginOptions) {
     super(options, import.meta.url);
     this.options = options;
+    this.serverReadOnly = createServerReadOnly(options.readOnly);
     this.shouldHaveSingleInstancePerWholeApp = () => true;
   }
 
@@ -116,6 +119,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       this.urls,
       this.options,
       this.componentPath('McpAuthorize.vue'),
+      this.serverReadOnly,
     );
     const pageSize = {
       default: this.options.pageSize?.default ?? DEFAULT_PAGE_SIZE,
@@ -163,7 +167,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
 
   setupEndpoints(server: IHttpServer) {
     registerToolEndpoints(server, this.adminforth);
-    registerSettingsEndpoints(server, this.authSecretStore, this.urls.mcpUrl, this.options.readOnly ?? false);
+    registerSettingsEndpoints(server, this.authSecretStore, this.urls.mcpUrl, this.serverReadOnly);
     registerOAuthEndpoints(server, this.oauth, adminApiPrefix(this.adminforth.config.baseUrl));
     registerMcpEndpoints(server, (input) => this.handleMcpRequest(input));
   }
@@ -218,7 +222,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       ...authenticated.adminUser,
       executedBy: formatMcpExecutedBy(client, authenticated.name),
     };
-    const readOnly = this.options.readOnly || authenticated.readOnly;
+    const readOnly = authenticated.readOnly || await this.serverReadOnly(authenticated.adminUser);
     const protocolResponse = await this.protocol.handle(
       new Request(this.urls.mcpUrl, { method: 'POST', headers: toolHeaders }),
       input.body,

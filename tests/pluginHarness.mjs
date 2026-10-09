@@ -22,7 +22,7 @@ function matches(record, filter) {
  * Activates the plugin against an in-memory AdminForth: `records` is the auth secret table, `users` the users
  * table, JWTs are opaque keys of `jwts`. Endpoints and raw Express routes are collected by method and path.
  */
-export function createPlugin({ adminPanelOrigin = 'https://admin.example', users, expressApp } = {}) {
+export function createPlugin({ adminPanelOrigin = 'https://admin.example', users, expressApp, readOnly, registeredSchemas = [] } = {}) {
   const records = [];
   const userRecords = users ?? [{ id: 'user-1', email: 'owner@example.com' }, { id: 'user-2', email: 'other@example.com' }];
   const jwts = new Map();
@@ -39,7 +39,7 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
       ],
     },
     codeInjector: { srcFoldersToSync: {}, allComponentNames: {} },
-    openApi: { registeredSchemas: [] },
+    openApi: { registeredSchemas },
     auth: {
       issueJWT: (payload, type) => {
         const token = `jwt-${jwts.size}`;
@@ -68,6 +68,7 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
   const plugin = new AdminForthMcpPlugin({
     adminPanelOrigin,
     authSecretResource: SECRET_OPTIONS,
+    readOnly,
   });
   plugin.modifyGlobalConfig(adminforth);
 
@@ -81,12 +82,13 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
     },
   });
 
-  /** Calls the MCP endpoint with an Authorization header and returns its status and headers. */
-  async function callMcp(authorization) {
+  /** Calls the MCP endpoint with an Authorization header and returns its status, headers and response text. */
+  async function callMcp(authorization, body = { jsonrpc: '2.0', id: 1, method: 'ping' }) {
     const headers = new Map();
     let status = 200;
+    let message;
     await endpoints.get('POST /mcp').handler({
-      body: { jsonrpc: '2.0', id: 1, method: 'ping' },
+      body,
       headers: {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',
@@ -95,9 +97,9 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
       query: {},
       cookies: [],
       requestUrl: '/adminapi/v1/mcp',
-      response: { setHeader: (name, value) => headers.set(name, value), setStatus: (code) => { status = code; } },
+      response: { setHeader: (name, value) => headers.set(name, value), setStatus: (code, text) => { status = code; message = text; } },
     });
-    return { status, headers };
+    return { status, headers, message };
   }
 
   return { plugin, adminforth, records, jwts, authorizedUsers, endpoints, rawRoutes, callMcp };
