@@ -1,4 +1,5 @@
 export const MCP_PATH = '/mcp';
+export const CONFIRMATION_PAGE_PATH = '/mcp-confirm';
 export const CONSENT_PAGE_PATH = '/mcp-authorize';
 
 export const OAUTH_PATHS = {

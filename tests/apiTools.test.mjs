@@ -43,8 +43,8 @@ function createAdminForth(endpoints) {
   };
 }
 
-function createTools(endpoints, { toolTimeoutMs = 1_000, hiddenResourceIds = [] } = {}) {
-  return new AdminForthApiTools(createAdminForth(endpoints), new Set(hiddenResourceIds), PAGE_SIZE, toolTimeoutMs);
+function createTools(endpoints, { toolTimeoutMs = 1_000, hiddenResourceIds = [], adminPanelConfirmation } = {}) {
+  return new AdminForthApiTools(createAdminForth(endpoints), new Set(hiddenResourceIds), PAGE_SIZE, toolTimeoutMs, adminPanelConfirmation);
 }
 
 function callTool(tools, name, args, { readOnly = false } = {}) {
@@ -56,6 +56,7 @@ function callTool(tools, name, args, { readOnly = false } = {}) {
     requestUrl: `${API_PREFIX}/mcp`,
     abortSignal: new AbortController().signal,
     readOnly,
+    connection: { id: 'secret-1', name: 'Claude Code' },
   });
 }
 
@@ -405,4 +406,37 @@ test('names tools by the endpoint path without the baseUrl and API prefix', () =
     ['delete_record', { destructiveHint: true }],
     ['get_resource', { readOnlyHint: true }],
   ]);
+});
+
+
+test('requiresHumanApproval does not intercept execution', async () => {
+  const { endpoint, calls } = recordingEndpoint('/delete_record', { ok: true }, { agent: { requiresHumanApproval: true } });
+  const result = await callTool(createTools([endpoint]), 'delete_record', { resourceId: 'cars' });
+  assert.deepEqual(result, { output: { ok: true }, isError: false });
+  assert.equal(calls.length, 1);
+});
+
+test('returns the admin panel confirmation when the call needs one', async () => {
+  const output = { ok: false, error: 'Confirmation required' };
+  const offered = { output: { confirmationUrl: 'https://admin.example/mcp-confirm?id=42', confirmationId: '42' }, isError: true };
+  const offers = [];
+  const unverifiedRequests = [];
+  const { endpoint } = recordingEndpoint('/start_custom_action', output);
+  const tools = createTools([endpoint], {
+    adminPanelConfirmation: {
+      runUnverified: (request, callback) => { unverifiedRequests.push(request); return callback(); },
+      offer: (...args) => { offers.push(args); return offered; },
+    },
+  });
+  assert.equal(await callTool(tools, 'start_custom_action', { resourceId: 'cars', recordId: '42' }), offered);
+  assert.deepEqual(unverifiedRequests.map(({ body, cookies }) => ({ body, cookies })), [{ body: { resourceId: 'cars', recordId: '42' }, cookies: [] }]);
+  assert.deepEqual(offers, [[output, { id: 'secret-1', name: 'Claude Code' }, { pk: '1' }, '/start_custom_action', { resourceId: 'cars', recordId: '42' }]]);
+});
+
+test('returns the tool output when the admin panel confirmation does not apply', async () => {
+  const { endpoint } = recordingEndpoint('/start_custom_action', { ok: true });
+  const tools = createTools([endpoint], {
+    adminPanelConfirmation: { runUnverified: (request, callback) => callback(), offer: () => undefined },
+  });
+  assert.deepEqual(await callTool(tools, 'start_custom_action', { resourceId: 'cars' }), { output: { ok: true }, isError: false });
 });

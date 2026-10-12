@@ -6,6 +6,8 @@ import {
   type IAdminForthEndpointHandlerInput,
   type IHttpServer,
 } from 'adminforth';
+import { McpAdminPanelConfirmation, WAIT_FOR_CONFIRMATION_TOOL_NAME } from './adminPanelConfirmation.js';
+import { registerConfirmationEndpoints } from './endpoints/confirmation.js';
 import { AdminForthApiTools } from './apiTools.js';
 import { formatMcpExecutedBy, readMcpClient, UNKNOWN_CLIENT } from './clientInfo.js';
 import { createMcpServerPresentation, McpProtocol } from './mcpProtocol.js';
@@ -20,8 +22,9 @@ import { setupOAuth } from './oauth/setup.js';
 import { requestExtra } from './requestExtra.js';
 import { createServerReadOnly, type ServerReadOnly } from './serverReadOnly.js';
 import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
+import { findContextualTwoFactorsAuth } from './twoFactorContext.js';
 import type { PluginOptions } from './types.js';
-import { adminApiPrefix, createMcpUrls, type McpUrls } from './urls.js';
+import { adminApiPrefix, CONFIRMATION_PAGE_PATH, createMcpUrls, type McpUrls } from './urls.js';
 
 const BEARER_TOKEN_RE = /^Bearer (\S+)$/i;
 const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie']);
@@ -56,6 +59,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   private authSecretStore!: McpAuthSecretStore;
   private oauth!: McpOAuth;
   private apiTools!: AdminForthApiTools;
+  private adminPanelConfirmation?: McpAdminPanelConfirmation;
   private skills!: McpSkills;
   private urls!: McpUrls;
   private readonly protocol = new McpProtocol();
@@ -121,6 +125,20 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       this.componentPath('McpAuthorize.vue'),
       this.serverReadOnly,
     );
+    const toolTimeoutMs = this.options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
+    const twoFactorsAuth = findContextualTwoFactorsAuth(adminforth);
+    if (twoFactorsAuth) {
+      adminforth.config.customization.customPages.push({
+        path: CONFIRMATION_PAGE_PATH,
+        component: { file: this.componentPath('McpConfirm.vue'), meta: { sidebarAndHeader: 'none' } },
+      });
+      this.adminPanelConfirmation = new McpAdminPanelConfirmation(
+        adminforth,
+        this.urls,
+        twoFactorsAuth,
+        toolTimeoutMs,
+      );
+    }
     const pageSize = {
       default: this.options.pageSize?.default ?? DEFAULT_PAGE_SIZE,
       max: this.options.pageSize?.max ?? MAX_PAGE_SIZE,
@@ -129,7 +147,8 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       adminforth,
       new Set([this.options.authSecretResource.resourceId]),
       pageSize,
-      this.options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
+      toolTimeoutMs,
+      this.adminPanelConfirmation,
     );
     this.skills = new McpSkills(this.customFolderPath, {
       'pageSize.default': pageSize.default,
@@ -169,6 +188,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     registerToolEndpoints(server, this.adminforth);
     registerSettingsEndpoints(server, this.authSecretStore, this.urls.mcpUrl, this.serverReadOnly);
     registerOAuthEndpoints(server, this.oauth, adminApiPrefix(this.adminforth.config.baseUrl));
+    if (this.adminPanelConfirmation) registerConfirmationEndpoints(server, this.adminPanelConfirmation);
     registerMcpEndpoints(server, (input) => this.handleMcpRequest(input));
   }
 
@@ -233,9 +253,16 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
           this.skills.serverInstructions(),
           readOnly,
         ),
-        listTools: () => [...this.apiTools.list(readOnly), this.skills.toolDefinition()],
+        listTools: () => [
+          ...this.apiTools.list(readOnly),
+          this.skills.toolDefinition(),
+          ...(this.adminPanelConfirmation ? [this.adminPanelConfirmation.toolDefinition()] : []),
+        ],
         callTool: async (name, arguments_) => {
           if (name === FETCH_SKILL_TOOL_NAME) return this.skills.call(arguments_);
+          if (name === WAIT_FOR_CONFIRMATION_TOOL_NAME && this.adminPanelConfirmation) {
+            return this.adminPanelConfirmation.wait(String(arguments_?.confirmationId), authenticated.recordId);
+          }
           return this.apiTools.call({
             name,
             arguments: arguments_,
@@ -244,6 +271,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
             requestUrl: input.requestUrl,
             abortSignal: input.abortSignal,
             readOnly,
+            connection: { id: authenticated.recordId, name: authenticated.name },
           });
         },
       },

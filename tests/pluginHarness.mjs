@@ -22,7 +22,7 @@ function matches(record, filter) {
  * Activates the plugin against an in-memory AdminForth: `records` is the auth secret table, `users` the users
  * table, JWTs are opaque keys of `jwts`. Endpoints and raw Express routes are collected by method and path.
  */
-export function createPlugin({ adminPanelOrigin = 'https://admin.example', users, expressApp, readOnly, registeredSchemas = [] } = {}) {
+export function createPlugin({ adminPanelOrigin = 'https://admin.example', users, expressApp, readOnly, registeredSchemas = [], twoFactorsAuth } = {}) {
   const records = [];
   const userRecords = users ?? [{ id: 'user-1', email: 'owner@example.com' }, { id: 'user-2', email: 'other@example.com' }];
   const jwts = new Map();
@@ -39,6 +39,7 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
       ],
     },
     codeInjector: { srcFoldersToSync: {}, allComponentNames: {} },
+    getPluginsByClassName: (className) => (className === 'TwoFactorsAuthPlugin' && twoFactorsAuth ? [twoFactorsAuth] : []),
     openApi: { registeredSchemas },
     auth: {
       issueJWT: (payload, type) => {

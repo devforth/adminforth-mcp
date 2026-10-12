@@ -1,4 +1,5 @@
 import type { Tool } from '@modelcontextprotocol/server';
+import type { McpAdminPanelConfirmation, McpConnection } from './adminPanelConfirmation.js';
 import { compactInputSchema } from './compactInputSchema.js';
 import type { McpPageSize } from './types.js';
 import { adminApiPrefix } from './urls.js';
@@ -235,6 +236,7 @@ export class AdminForthApiTools {
     private readonly hiddenResourceIds: ReadonlySet<string>,
     pageSize: McpPageSize,
     private readonly toolTimeoutMs: number,
+    private readonly adminPanelConfirmation: McpAdminPanelConfirmation | undefined,
   ) {
     this.toolOverrides = createToolOverrides(pageSize, adminforth);
   }
@@ -322,6 +324,7 @@ export class AdminForthApiTools {
     requestUrl: string;
     abortSignal: AbortSignal;
     readOnly: boolean;
+    connection: McpConnection;
   }): Promise<{ output: unknown; isError: boolean }> {
     const schema = this.catalog(params.readOnly).schemas.get(params.name);
     if (!schema) {
@@ -354,25 +357,31 @@ export class AdminForthApiTools {
     }
 
     const response = createDirectResponse();
-    const output = await this.withTimeout(params.abortSignal, (abortSignal) => schema.handler({
+    const request = {
       body,
-      query,
+      query: query as Record<string, string>,
       headers: params.headers,
       cookies: [],
-      adminUser: params.adminUser,
-      response,
       requestUrl: params.requestUrl,
-      abortSignal,
-      _raw_express_req: undefined as never,
-      _raw_express_res: undefined as never,
-      tr: (message, category, translationParams, pluralizationNumber) => this.adminforth.tr(
-        message,
-        category,
-        params.headers['accept-language'],
-        translationParams,
-        pluralizationNumber,
-      ),
-    }));
+      response,
+    };
+    const output = await this.withTimeout(params.abortSignal, (abortSignal) => {
+      const execute = async () => schema.handler({
+        ...request,
+        adminUser: params.adminUser,
+        abortSignal,
+        _raw_express_req: undefined as never,
+        _raw_express_res: undefined as never,
+        tr: (message, category, translationParams, pluralizationNumber) => this.adminforth.tr(
+          message,
+          category,
+          params.headers['accept-language'],
+          translationParams,
+          pluralizationNumber,
+        ),
+      });
+      return this.adminPanelConfirmation ? this.adminPanelConfirmation.runUnverified(request, execute) : execute();
+    });
 
     if (output === TOOL_TIMEOUT) {
       return {
@@ -395,6 +404,15 @@ export class AdminForthApiTools {
         isError: true,
       };
     }
+
+    const confirmation = this.adminPanelConfirmation?.offer(
+      output,
+      params.connection,
+      params.adminUser,
+      schema.path.slice(adminApiPrefix(this.adminforth.config.baseUrl).length),
+      handlerArguments,
+    );
+    if (confirmation) return confirmation;
 
     const responseValidation = this.adminforth.openApi.validateResponseSchema(schema, output);
     if (!responseValidation.valid) {

@@ -39,7 +39,7 @@ get_resource (with detailed: true), get_resource_data, create_record, update_rec
 # Errors
 
 - If a tool returns an error, show it to the user in plain words. Fix the call and retry only when the error makes the fix obvious, for example a missing required field the user already gave; otherwise ask the user.
-- If a dedicated action fails, for example because it needs a two-factor verification or another step that only the admin panel UI can provide, do not reach the same result by editing the fields it changes. Tell the user why the action failed and that they can run it in the admin panel.
+- If a dedicated action fails, for example because it needs a two-factor verification or another step that only the admin panel UI can provide, do not reach the same result by editing the fields it changes. If the result has a confirmationUrl, show it to the user and call wait_for_confirmation with its confirmationId: the action runs in the admin panel once the user confirms it there, so do not call the action again. Otherwise tell the user why the action failed and that they can run it in the admin panel.
 
 # Values
 

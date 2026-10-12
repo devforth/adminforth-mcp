@@ -109,6 +109,17 @@ test('registers the OAuth endpoints and the consent page', () => {
   assert.deepEqual(adminforth.config.customization.customPages.map((page) => page.path), ['/mcp-authorize']);
 });
 
+test('offers admin panel confirmation only with a 2FA plugin that verifies external requests', async () => {
+  const contextualTwoFactorsAuth = { withVerificationContext: (verificationResult, extra, callback) => callback() };
+  for (const [twoFactorsAuth, offered] of [[undefined, false], [{}, false], [contextualTwoFactorsAuth, true]]) {
+    const { endpoints, adminforth, callMcp } = createPlugin({ twoFactorsAuth });
+    const secret = await createSecret(endpoints);
+    assert.equal(adminforth.config.customization.customPages.some((page) => page.path === '/mcp-confirm'), offered);
+    assert.equal(endpoints.has('POST /mcp/confirmation/run'), offered);
+    assert.equal((await listTools(callMcp, secret)).includes('wait_for_confirmation'), offered);
+  }
+});
+
 test('reads form-encoded token requests and caps their size', async (t) => {
   const app = express();
   app.set('env', 'test');
