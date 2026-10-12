@@ -5,18 +5,17 @@
         <h1 class="text-xl font-medium text-gray-900 dark:text-white">{{ title }}</h1>
         <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
           <b>{{ pending.connectionName }}</b>
-          {{ pending.actionDescription
-            ? $t('asks to run this action on your behalf.')
-            : $t('asks to run {path} on your behalf with these arguments:', { path: pending.path }) }}
+          {{ $t('asks to run this action on your behalf. | asks to run these actions on your behalf.', pending.actions.length) }}
         </p>
-        <pre v-if="!pending.actionDescription" class="mt-3 max-h-80 overflow-auto rounded-default bg-gray-100 p-3 text-xs text-gray-800 dark:bg-gray-900 dark:text-gray-100">{{ argumentsText }}</pre>
-        <p v-if="resultMessage" class="mt-4 text-sm font-medium" :class="failed ? 'text-red-700 dark:text-red-300' : 'text-green-700 dark:text-green-300'">
-          {{ resultMessage }}
-        </p>
-        <div v-if="!finished" class="mt-6 flex justify-end gap-2">
-          <Button variant="secondary" :disabled="running" @click="decline">{{ $t('Decline') }}</Button>
-          <Button :loader="running" :disabled="running" @click="confirm">{{ $t('Confirm') }}</Button>
-        </div>
+        <template v-if="resultMessage">
+          <p class="mt-4 text-sm font-medium" :class="failed ? 'text-red-700 dark:text-red-300' : 'text-green-700 dark:text-green-300'">
+            {{ resultMessage }}
+          </p>
+          <ul v-if="failedErrors.length" class="mt-2 list-disc space-y-1 pl-5 text-sm text-red-700 dark:text-red-300">
+            <li v-for="(failedError, i) in failedErrors" :key="i">{{ failedError }}</li>
+          </ul>
+        </template>
+        <Spinner v-else class="mx-auto mt-4 h-8 w-8" />
       </template>
       <template v-else-if="error">
         <h1 class="text-xl font-medium text-gray-900 dark:text-white">{{ $t('Cannot run the action') }}</h1>
@@ -31,67 +30,93 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
-import { Button, Spinner } from '@/afcl';
+import { Spinner } from '@/afcl';
 import { callAdminForthApi } from '@/utils';
 
-type PendingConfirmation = {
+type PendingAction = {
+  id: string;
   actionDescription?: string;
-  connectionName: string;
   path: string;
   arguments: Record<string, unknown>;
 };
+type PendingConfirmation = {
+  connectionName: string;
+  actions: PendingAction[];
+};
+type ActionResult = { id: string; output: { error?: string }; isError: boolean };
 const { t } = useI18n();
 const route = useRoute();
-const id = String(route.query.id);
 const pending = ref<PendingConfirmation | null>(null);
 const error = ref('');
-const running = ref(false);
-const finished = ref(false);
 const failed = ref(false);
 const resultMessage = ref('');
-const argumentsText = computed(() => JSON.stringify(pending.value?.arguments, null, 2));
-const title = computed(() => pending.value?.actionDescription ?? t('Confirm the action of your agent'));
+const failedErrors = ref<string[]>([]);
+const ids = computed(() => pending.value!.actions.map((action) => action.id));
+const title = computed(() => {
+  const actions = pending.value!.actions;
+  return actions.length > 1
+    ? t('Confirm {count} actions of your agent', { count: actions.length })
+    : actions[0].actionDescription ?? t('Confirm the action of your agent');
+});
+// Without a description of an action, the modal shows the raw call of the agent instead.
+const modalContent = computed(() => {
+  const actions = pending.value!.actions;
+  if (actions.length > 1) {
+    return { items: actions.map((action) => action.actionDescription ?? `${action.path} ${JSON.stringify(action.arguments)}`) };
+  }
+  const [action] = actions;
+  return action.actionDescription ? {} : { details: `${action.path}\n${JSON.stringify(action.arguments, null, 2)}` };
+});
 
 onMounted(async () => {
-  const response = await callAdminForthApi({ method: 'GET', path: `/mcp/confirmation?id=${encodeURIComponent(id)}` });
+  const response = await callAdminForthApi({ method: 'GET', path: `/mcp/confirmation?id=${encodeURIComponent(String(route.query.id))}` });
   if (response?.error) error.value = response.error;
-  else if (response) pending.value = response;
+  else if (response) {
+    pending.value = response;
+    await confirm();
+  }
 });
 
 async function confirm() {
-  running.value = true;
   try {
     let verificationResult;
     try {
-      verificationResult = await (window as any).adminforthTwoFaModal.get2FaConfirmationResult(title.value);
+      verificationResult = await (window as any).adminforthTwoFaModal.get2FaConfirmationResult(title.value, undefined, modalContent.value);
     } catch (error) {
       await decline();
-      if (error !== 'Cancel' && finished.value) {
+      if (error !== 'Cancel' && !failed.value) {
         failed.value = true;
         resultMessage.value = error instanceof Error ? error.message : String(error);
       }
       return;
     }
-    const response = await callAdminForthApi({ method: 'POST', path: '/mcp/confirmation/run', body: { id, verificationResult } });
-    failed.value = !response || Boolean(response.error) || response.ok === false;
-    finished.value = true;
-    resultMessage.value = failed.value
-      ? response?.error ?? t('The action failed.')
-      : t('Done. Your agent got the result. You can close this page.');
-  } catch (error) {
-    if (error !== 'Cancel') {
+    const response = await callAdminForthApi({ method: 'POST', path: '/mcp/confirmation/run', body: { ids: ids.value, verificationResult } });
+    if (!response || response.error) {
       failed.value = true;
-      resultMessage.value = error instanceof Error ? error.message : String(error);
+      resultMessage.value = response?.error ?? t('The action failed.');
+      return;
     }
-  } finally {
-    running.value = false;
+    const errors = (response.results as ActionResult[])
+      .filter((result) => result.isError)
+      .map((result) => result.output?.error ?? t('The action failed.'));
+    failed.value = errors.length > 0;
+    if (!errors.length) {
+      resultMessage.value = t('Done. Your agent got the result. You can close this page.');
+    } else if (ids.value.length === 1) {
+      resultMessage.value = errors[0];
+    } else {
+      resultMessage.value = t('{failed} of {count} actions failed:', { failed: errors.length, count: ids.value.length });
+      failedErrors.value = errors;
+    }
+  } catch (error) {
+    failed.value = true;
+    resultMessage.value = error instanceof Error ? error.message : String(error);
   }
 }
 
 async function decline() {
-  const response = await callAdminForthApi({ method: 'POST', path: '/mcp/confirmation/decline', body: { id } });
+  const response = await callAdminForthApi({ method: 'POST', path: '/mcp/confirmation/decline', body: { ids: ids.value } });
   failed.value = Boolean(response?.error);
-  finished.value = !failed.value;
   resultMessage.value = response?.error ?? t('Declined. Your agent was told.');
 }
 </script>

@@ -8,6 +8,7 @@ import type {
   IAdminForthHttpResponse,
 } from 'adminforth';
 import type { ContextualTwoFactorsAuth } from './twoFactorContext.js';
+import { MAX_ACTIONS_PER_CONFIRMATION } from './schemas/confirmation.js';
 import { adminApiPrefix, CONFIRMATION_PAGE_PATH, type McpUrls } from './urls.js';
 
 export const WAIT_FOR_CONFIRMATION_TOOL_NAME = 'wait_for_confirmation';
@@ -18,8 +19,10 @@ const TWO_FACTOR_REQUIRED_CODE = 'TWO_FACTOR_REQUIRED';
 type ToolCallResult = { output: unknown; isError: boolean };
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
 type ToolOutput = { code?: string; actionDescription?: string };
+type ConfirmationInput = IAdminForthEndpointHandlerInput & { adminUser: AdminUser };
 export type McpConnection = { id: string; name: string };
 interface PendingCall {
+  id: string;
   userPk: string;
   connection: McpConnection;
   executedBy?: string;
@@ -30,6 +33,15 @@ interface PendingCall {
   running: boolean;
   settle: (result: ToolCallResult) => void;
   result: Promise<ToolCallResult>;
+}
+
+/** The verification is cached per user, so it must be checked as the same agent identity the actions run with. */
+function actingUser(adminUser: AdminUser, pending: PendingCall): AdminUserWithExecutor {
+  return { ...adminUser, executedBy: pending.executedBy };
+}
+
+function actsAsOne(pending: PendingCall, other: PendingCall): boolean {
+  return pending.connection.id === other.connection.id && pending.executedBy === other.executedBy;
 }
 
 export class McpAdminPanelConfirmation {
@@ -73,9 +85,10 @@ export class McpAdminPanelConfirmation {
   ): ToolCallResult | undefined {
     const { code, actionDescription } = (output ?? {}) as ToolOutput;
     if (code !== TWO_FACTOR_REQUIRED_CODE) return undefined;
-    const confirmationId = randomUUID();
+    const id = randomUUID();
     let resolve!: (result: ToolCallResult) => void;
     const pending: PendingCall = {
+      id,
       userPk: adminUser.pk!,
       connection,
       executedBy: adminUser.executedBy,
@@ -90,36 +103,99 @@ export class McpAdminPanelConfirmation {
       },
       result: new Promise((settle) => { resolve = settle; }),
     };
-    this.pending.set(confirmationId, pending);
-    setTimeout(() => this.pending.delete(confirmationId), CONFIRMATION_TTL_MS).unref();
+    this.pending.set(id, pending);
+    setTimeout(() => this.pending.delete(id), CONFIRMATION_TTL_MS).unref();
     return {
       output: {
-        error: `This action needs a two-factor verification, which only the admin panel can ask for. Show the user the confirmationUrl, then call ${WAIT_FOR_CONFIRMATION_TOOL_NAME} with the confirmationId: it returns the result once the user confirms or declines the action there.`,
-        confirmationUrl: `${this.pageUrl}?id=${confirmationId}`,
-        confirmationId,
+        error: `This action needs a two-factor verification, which only the admin panel can ask for. Show the user the confirmationUrl, then call ${WAIT_FOR_CONFIRMATION_TOOL_NAME} with the confirmationId: it returns the result once the user confirms or declines the action there. A link confirms up to ${MAX_ACTIONS_PER_CONFIRMATION} pending actions of this connection at once, so after several such actions show the user only one link.`,
+        confirmationUrl: `${this.pageUrl}?id=${id}`,
+        confirmationId: id,
       },
       isError: true,
     };
   }
 
+  /** The user confirms the other pending actions of the same agent together with the one of the link. */
   describe(confirmationId: string, adminUser: AdminUser) {
     const pending = this.open(confirmationId, adminUser);
     if ('error' in pending) return pending;
+    const others = [...this.pending.values()].filter((other) => other !== pending
+      && actsAsOne(other, pending)
+      && !('error' in this.open(other.id, adminUser)));
     return {
-      actionDescription: pending.actionDescription,
       connectionName: pending.connection.name,
-      path: pending.path,
-      arguments: pending.arguments,
+      actions: [pending, ...others].slice(0, MAX_ACTIONS_PER_CONFIRMATION).map((action) => ({
+        id: action.id,
+        actionDescription: action.actionDescription,
+        path: action.path,
+        arguments: action.arguments,
+      })),
     };
   }
 
-  async run(confirmationId: string, verificationResult: Record<string, unknown>, input: IAdminForthEndpointHandlerInput & { adminUser: AdminUser }): Promise<unknown> {
-    const pending = this.open(confirmationId, input.adminUser);
-    if ('error' in pending) {
+  async run(ids: string[], verificationResult: Record<string, unknown>, input: ConfirmationInput): Promise<unknown> {
+    const group = this.openGroup(ids, input.adminUser);
+    if ('error' in group) {
       input.response.setStatus(400);
-      return pending;
+      return group;
     }
-    pending.running = true;
+    group.forEach((pending) => { pending.running = true; });
+    const extra: HttpExtra = {
+      body: {},
+      query: {},
+      headers: input.headers,
+      cookies: input.cookies,
+      requestUrl: input.requestUrl,
+      response: input.response,
+    };
+    const failAll = (output: unknown) => group.map(() => ({ output: { ok: false, ...output as object }, isError: true }));
+    let results: ToolCallResult[];
+    try {
+      const outcome = await this.twoFactorsAuth.withVerificationContext(verificationResult, extra, async () => {
+        // A passkey can be used only once: the actions reuse this check, and a failed one ends the context with its code.
+        await this.twoFactorsAuth.verifyAuto(actingUser(input.adminUser, group[0]));
+        const results: ToolCallResult[] = [];
+        for (const pending of group) results.push(await this.execute(pending, verificationResult, input));
+        return results;
+      });
+      results = Array.isArray(outcome) ? outcome : failAll(outcome);
+    } catch (error) {
+      results = failAll({ code: 'MCP_CONFIRMATION_FAILED', error: error instanceof Error ? error.message : String(error) });
+    }
+    group.forEach((pending, index) => {
+      pending.running = false;
+      pending.settle(results[index]);
+    });
+    return { results: group.map((pending, index) => ({ id: pending.id, ...results[index] })) };
+  }
+
+  decline(ids: string[], adminUser: AdminUser): { ok: true } | { error: string } {
+    const group = this.openGroup(ids, adminUser);
+    if ('error' in group) return group;
+    group.forEach((pending) => pending.settle({ output: { error: 'The user declined the action in the admin panel.' }, isError: true }));
+    return { ok: true };
+  }
+
+  async wait(confirmationId: string, connectionId: string): Promise<ToolCallResult> {
+    const pending = this.pending.get(confirmationId);
+    if (pending?.connection.id !== connectionId) {
+      return { output: { error: 'Unknown or expired confirmationId.' }, isError: true };
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<ToolCallResult>((resolve) => {
+      timer = setTimeout(() => resolve({
+        output: { status: 'waiting', note: `The user has not confirmed or declined the action yet. Call ${WAIT_FOR_CONFIRMATION_TOOL_NAME} again to keep waiting.` },
+        isError: false,
+      }), WAIT_MS);
+    });
+    try {
+      return await Promise.race([pending.result, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async execute(pending: PendingCall, verificationResult: Record<string, unknown>, input: ConfirmationInput): Promise<ToolCallResult> {
     const controller = new AbortController();
     const abort = () => controller.abort();
     input.abortSignal?.addEventListener('abort', abort);
@@ -149,14 +225,14 @@ export class McpAdminPanelConfirmation {
         requestUrl: schema.path,
         response,
       };
-      const execution = this.twoFactorsAuth.withVerificationContext(verificationResult, request, async () => schema.handler!({
+      const execution = schema.handler!({
         ...request,
-        adminUser: { ...input.adminUser, executedBy: pending.executedBy } as AdminUserWithExecutor,
+        adminUser: actingUser(input.adminUser, pending),
         abortSignal: controller.signal,
         tr: input.tr,
         _raw_express_req: undefined as never,
         _raw_express_res: undefined as never,
-      }));
+      });
       const timeout = new Promise((resolve) => {
         timer = setTimeout(() => {
           controller.abort();
@@ -170,36 +246,22 @@ export class McpAdminPanelConfirmation {
     } finally {
       clearTimeout(timer);
       input.abortSignal?.removeEventListener('abort', abort);
-      pending.running = false;
     }
-    pending.settle({ output, isError: responseStatus >= 400 || Boolean(output && typeof output === 'object' && ('error' in output || output.ok === false)) });
-    return output;
+    return { output, isError: responseStatus >= 400 || Boolean(output && typeof output === 'object' && ('error' in output || output.ok === false)) };
   }
 
-  decline(confirmationId: string, adminUser: AdminUser): { ok: true } | { error: string } {
-    const pending = this.open(confirmationId, adminUser);
-    if ('error' in pending) return pending;
-    pending.settle({ output: { error: 'The user declined the action in the admin panel.' }, isError: true });
-    return { ok: true };
-  }
-
-  async wait(confirmationId: string, connectionId: string): Promise<ToolCallResult> {
-    const pending = this.pending.get(confirmationId);
-    if (pending?.connection.id !== connectionId) {
-      return { output: { error: 'Unknown or expired confirmationId.' }, isError: true };
+  /** All actions of a group belong to one user and run as one agent, so they can share one verification. */
+  private openGroup(ids: string[], adminUser: AdminUser): PendingCall[] | { error: string } {
+    const group: PendingCall[] = [];
+    for (const id of new Set(ids)) {
+      const pending = this.open(id, adminUser);
+      if ('error' in pending) return pending;
+      if (group.length && !actsAsOne(pending, group[0])) {
+        return { error: 'These actions were requested by different MCP clients.' };
+      }
+      group.push(pending);
     }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<ToolCallResult>((resolve) => {
-      timer = setTimeout(() => resolve({
-        output: { status: 'waiting', note: `The user has not confirmed or declined the action yet. Call ${WAIT_FOR_CONFIRMATION_TOOL_NAME} again to keep waiting.` },
-        isError: false,
-      }), WAIT_MS);
-    });
-    try {
-      return await Promise.race([pending.result, timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
+    return group;
   }
 
   private open(confirmationId: string, adminUser: AdminUser): PendingCall | { error: string } {

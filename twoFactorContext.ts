@@ -1,7 +1,8 @@
-import type { HttpExtra, IAdminForth } from 'adminforth';
+import type { AdminUser, HttpExtra, IAdminForth } from 'adminforth';
 
 export interface ContextualTwoFactorsAuth {
   withVerificationContext<T>(verificationResult: Record<string, unknown> | undefined, extra: HttpExtra, callback: () => Promise<T>): Promise<unknown>;
+  verifyAuto(adminUser: AdminUser, actionDescription?: string): Promise<unknown>;
 }
 
 /** Only newer 2FA plugins can verify verifyAuto calls within an external request. */

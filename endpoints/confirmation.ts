@@ -26,7 +26,7 @@ export function registerConfirmationEndpoints(server: IHttpServer, confirmation:
     request_schema: runConfirmationBodySchema,
     handler: async (input) => {
       const body: RunConfirmationBody = input.body;
-      return confirmation.run(body.id, body.verificationResult, input);
+      return confirmation.run(body.ids, body.verificationResult, input);
     },
   });
   server.endpoint({
@@ -36,7 +36,7 @@ export function registerConfirmationEndpoints(server: IHttpServer, confirmation:
     request_schema: declineConfirmationBodySchema,
     handler: async (input) => {
       const body: DeclineConfirmationBody = input.body;
-      const result = confirmation.decline(body.id, input.adminUser);
+      const result = confirmation.decline(body.ids, input.adminUser);
       if ('error' in result) input.response.setStatus(400);
       return result;
     },

@@ -1,10 +1,14 @@
 import { z } from 'zod';
 
+/** One confirmation in the admin panel covers at most this many pending actions, all shown to the user. */
+export const MAX_ACTIONS_PER_CONFIRMATION = 20;
+
+const confirmationIds = z.array(z.string()).min(1).max(MAX_ACTIONS_PER_CONFIRMATION);
 const runConfirmationBody = z.object({
-  id: z.string(),
+  ids: confirmationIds,
   verificationResult: z.record(z.string(), z.unknown()),
 });
-const declineConfirmationBody = z.object({ id: z.string() });
+const declineConfirmationBody = z.object({ ids: confirmationIds });
 export type RunConfirmationBody = z.infer<typeof runConfirmationBody>;
 export type DeclineConfirmationBody = z.infer<typeof declineConfirmationBody>;
 
