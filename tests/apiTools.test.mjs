@@ -43,8 +43,9 @@ function createAdminForth(endpoints) {
   };
 }
 
-function createTools(endpoints, { toolTimeoutMs = 1_000, hiddenResourceIds = [], adminPanelConfirmation } = {}) {
-  return new AdminForthApiTools(createAdminForth(endpoints), new Set(hiddenResourceIds), PAGE_SIZE, toolTimeoutMs, adminPanelConfirmation);
+function createTools(endpoints, { toolTimeoutMs = 1_000, invisibleResourceIds = [], adminPanelConfirmation } = {}) {
+  const resourceVisibility = { isVisible: async (_adminUser, resourceId) => !invisibleResourceIds.includes(resourceId) };
+  return new AdminForthApiTools(createAdminForth(endpoints), resourceVisibility, PAGE_SIZE, toolTimeoutMs, adminPanelConfirmation);
 }
 
 function callTool(tools, name, args, { readOnly = false } = {}) {
@@ -318,16 +319,16 @@ test('answers a handler that returns nothing with an error', async () => {
   });
 });
 
-test('refuses resources hidden from MCP', async () => {
-  const { endpoint, calls } = recordingEndpoint('/get_resource_data', { data: [] });
+test('answers calls to resources invisible to the user as if the resource did not exist', async () => {
+  const { endpoint, calls } = recordingEndpoint('/get_resource', { resource: carsResource });
 
   const result = await callTool(
-    createTools([endpoint], { hiddenResourceIds: ['mcp_auth_secrets'] }),
-    'get_resource_data',
+    createTools([endpoint], { invisibleResourceIds: ['mcp_auth_secrets'] }),
+    'get_resource',
     { resourceId: 'mcp_auth_secrets' },
   );
 
-  assert.equal(result.isError, true);
+  assert.deepEqual(result, { output: { error: 'Resource mcp_auth_secrets not found' }, isError: true });
   assert.equal(calls.length, 0);
 });
 

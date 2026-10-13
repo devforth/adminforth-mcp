@@ -1,6 +1,7 @@
 import type { Tool } from '@modelcontextprotocol/server';
 import type { McpAdminPanelConfirmation, McpConnection } from './adminPanelConfirmation.js';
 import { compactInputSchema } from './compactInputSchema.js';
+import type { McpResourceVisibility } from './resourceVisibility.js';
 import type { McpPageSize } from './types.js';
 import { adminApiPrefix } from './urls.js';
 import { AdminForthDataTypes } from 'adminforth';
@@ -233,7 +234,7 @@ function createDirectResponse(): IAdminForthHttpResponse & { status: number; mes
 export class AdminForthApiTools {
   constructor(
     private readonly adminforth: IAdminForth,
-    private readonly hiddenResourceIds: ReadonlySet<string>,
+    private readonly resourceVisibility: McpResourceVisibility,
     pageSize: McpPageSize,
     private readonly toolTimeoutMs: number,
     private readonly adminPanelConfirmation: McpAdminPanelConfirmation | undefined,
@@ -330,14 +331,9 @@ export class AdminForthApiTools {
     if (!schema) {
       return { output: { error: `Unknown tool: ${params.name}` }, isError: true };
     }
-    if (
-      typeof params.arguments?.resourceId === 'string'
-      && this.hiddenResourceIds.has(params.arguments.resourceId)
-    ) {
-      return {
-        output: { error: 'This resource is not available through MCP.' },
-        isError: true,
-      };
+    const resourceId = params.arguments?.resourceId;
+    if (typeof resourceId === 'string' && !await this.resourceVisibility.isVisible(params.adminUser, resourceId)) {
+      return { output: { error: `Resource ${resourceId} not found` }, isError: true };
     }
 
     const override = this.toolOverrides[params.name];

@@ -20,6 +20,7 @@ import { AuthSecretRepository } from './repositories/authSecret.js';
 import type { McpOAuth } from './oauth/authorizationServer.js';
 import { setupOAuth } from './oauth/setup.js';
 import { requestExtra } from './requestExtra.js';
+import { McpResourceVisibility } from './resourceVisibility.js';
 import { createServerReadOnly, type ServerReadOnly } from './serverReadOnly.js';
 import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
 import { findContextualTwoFactorsAuth } from './twoFactorContext.js';
@@ -59,6 +60,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   private authSecretStore!: McpAuthSecretStore;
   private oauth!: McpOAuth;
   private apiTools!: AdminForthApiTools;
+  private resourceVisibility!: McpResourceVisibility;
   private adminPanelConfirmation?: McpAdminPanelConfirmation;
   private skills!: McpSkills;
   private urls!: McpUrls;
@@ -143,9 +145,13 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       default: this.options.pageSize?.default ?? DEFAULT_PAGE_SIZE,
       max: this.options.pageSize?.max ?? MAX_PAGE_SIZE,
     };
-    this.apiTools = new AdminForthApiTools(
+    this.resourceVisibility = new McpResourceVisibility(
       adminforth,
       new Set([this.options.authSecretResource.resourceId]),
+    );
+    this.apiTools = new AdminForthApiTools(
+      adminforth,
+      this.resourceVisibility,
       pageSize,
       toolTimeoutMs,
       this.adminPanelConfirmation,
@@ -185,7 +191,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   }
 
   setupEndpoints(server: IHttpServer) {
-    registerToolEndpoints(server, this.adminforth);
+    registerToolEndpoints(server, this.adminforth, this.resourceVisibility);
     registerSettingsEndpoints(server, this.authSecretStore, this.urls.mcpUrl, this.serverReadOnly);
     registerOAuthEndpoints(server, this.oauth, adminApiPrefix(this.adminforth.config.baseUrl));
     if (this.adminPanelConfirmation) registerConfirmationEndpoints(server, this.adminPanelConfirmation);
