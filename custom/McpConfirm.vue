@@ -1,28 +1,25 @@
 <template>
   <div class="af-mcp-confirm flex min-h-screen items-center justify-center bg-gray-100 p-4 dark:bg-gray-800">
-    <div class="w-full max-w-lg rounded-lg bg-white p-6 shadow dark:bg-gray-700">
+    <div v-if="resultMessage || error" class="w-full max-w-lg rounded-lg bg-white p-6 shadow dark:bg-gray-700">
       <template v-if="pending">
         <h1 class="text-xl font-medium text-gray-900 dark:text-white">{{ title }}</h1>
         <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
           <b>{{ pending.connectionName }}</b>
           {{ $t('asks to run this action on your behalf. | asks to run these actions on your behalf.', pending.actions.length) }}
         </p>
-        <template v-if="resultMessage">
-          <p class="mt-4 text-sm font-medium" :class="failed ? 'text-red-700 dark:text-red-300' : 'text-green-700 dark:text-green-300'">
-            {{ resultMessage }}
-          </p>
-          <ul v-if="failedErrors.length" class="mt-2 list-disc space-y-1 pl-5 text-sm text-red-700 dark:text-red-300">
-            <li v-for="(failedError, i) in failedErrors" :key="i">{{ failedError }}</li>
-          </ul>
-        </template>
-        <Spinner v-else class="mx-auto mt-4 h-8 w-8" />
+        <p class="mt-4 text-sm font-medium" :class="failed ? 'text-red-700 dark:text-red-300' : 'text-green-700 dark:text-green-300'">
+          {{ resultMessage }}
+        </p>
+        <ul v-if="failedErrors.length" class="mt-2 list-disc space-y-1 pl-5 text-sm text-red-700 dark:text-red-300">
+          <li v-for="(failedError, i) in failedErrors" :key="i">{{ failedError }}</li>
+        </ul>
       </template>
-      <template v-else-if="error">
+      <template v-else>
         <h1 class="text-xl font-medium text-gray-900 dark:text-white">{{ $t('Cannot run the action') }}</h1>
         <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">{{ error }}</p>
       </template>
-      <Spinner v-else class="mx-auto h-8 w-8" />
     </div>
+    <Spinner v-else-if="running" class="h-8 w-8" />
   </div>
 </template>
 
@@ -49,6 +46,7 @@ const route = useRoute();
 const pending = ref<PendingConfirmation | null>(null);
 const error = ref('');
 const failed = ref(false);
+const running = ref(false);
 const resultMessage = ref('');
 const failedErrors = ref<string[]>([]);
 const ids = computed(() => pending.value!.actions.map((action) => action.id));
@@ -90,6 +88,7 @@ async function confirm() {
       }
       return;
     }
+    running.value = true;
     const response = await callAdminForthApi({ method: 'POST', path: '/mcp/confirmation/run', body: { ids: ids.value, verificationResult } });
     if (!response || response.error) {
       failed.value = true;
