@@ -123,6 +123,12 @@ test('confirms a group of actions with one verification and delivers each result
   assert.equal((await confirmation.wait(ids[2], 'connection-1')).isError, false);
 });
 
+test('reports a record a beforeSave hook saved itself as a success', async () => {
+  const output = { error: 'Operation aborted by hook', ok: false, newRecordId: '7', redirectToRecordId: '7' };
+  const { confirmation, id, input } = setup([output]);
+  assert.deepEqual((await confirmation.run([id], VERIFICATION, input)).results, [{ id, output, isError: false }]);
+});
+
 test('a failed verification settles every action of the group without running them', async () => {
   const failure = { error: 'Wrong or expired OTP code', code: 'TWO_FACTOR_INVALID' };
   const { confirmation, calls, offer, id, input } = setup(undefined, { verification: failure });

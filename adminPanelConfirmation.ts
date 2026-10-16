@@ -9,6 +9,7 @@ import type {
 } from 'adminforth';
 import type { ContextualTwoFactorsAuth } from './twoFactorContext.js';
 import { MAX_ACTIONS_PER_CONFIRMATION } from './schemas/confirmation.js';
+import { isErrorOutput } from './toolOutput.js';
 import { adminApiPrefix, CONFIRMATION_PAGE_PATH, type McpUrls } from './urls.js';
 
 export const WAIT_FOR_CONFIRMATION_TOOL_NAME = 'wait_for_confirmation';
@@ -247,7 +248,7 @@ export class McpAdminPanelConfirmation {
       clearTimeout(timer);
       input.abortSignal?.removeEventListener('abort', abort);
     }
-    return { output, isError: responseStatus >= 400 || Boolean(output && typeof output === 'object' && ('error' in output || output.ok === false)) };
+    return { output, isError: isErrorOutput(responseStatus, output) };
   }
 
   /** All actions of a group belong to one user and run as one agent, so they can share one verification. */

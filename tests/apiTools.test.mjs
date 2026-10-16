@@ -308,6 +308,15 @@ test('returns handler errors without projecting them', async () => {
   assert.deepEqual(result, { output: { error: 'Resource not found' }, isError: true });
 });
 
+test('reports a record a beforeSave hook saved itself as a success', async () => {
+  const output = { error: 'Operation aborted by hook', ok: false, newRecordId: '7', redirectToRecordId: '7' };
+  const { endpoint } = recordingEndpoint('/create_record', output);
+
+  const result = await callTool(createTools([endpoint]), 'create_record', { resourceId: 'cars' });
+
+  assert.deepEqual(result, { output, isError: false });
+});
+
 test('answers a handler that returns nothing with an error', async () => {
   const tools = createTools([{ path: '/returns_nothing', handler: async () => {} }]);
 

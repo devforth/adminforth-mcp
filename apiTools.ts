@@ -2,6 +2,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { McpAdminPanelConfirmation, McpConnection } from './adminPanelConfirmation.js';
 import { compactInputSchema } from './compactInputSchema.js';
 import type { McpResourceVisibility } from './resourceVisibility.js';
+import { isErrorOutput } from './toolOutput.js';
 import type { McpPageSize } from './types.js';
 import { adminApiPrefix } from './urls.js';
 import { AdminForthDataTypes } from 'adminforth';
@@ -418,9 +419,7 @@ export class AdminForthApiTools {
       };
     }
 
-    const isError = response.status >= 400 || Boolean(
-      output && typeof output === 'object' && 'error' in output,
-    );
+    const isError = isErrorOutput(response.status, output);
     return {
       output: isError || !override?.project ? output : override.project(output, args, params.arguments ?? {}),
       isError,
