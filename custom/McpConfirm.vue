@@ -1,24 +1,28 @@
 <template>
-  <div class="af-mcp-confirm flex min-h-screen items-center justify-center bg-gray-100 p-4 dark:bg-gray-800">
-    <div v-if="resultMessage || error" class="w-full max-w-lg rounded-lg bg-white p-6 shadow dark:bg-gray-700">
+  <div class="af-mcp-confirm flex min-h-screen items-center justify-center bg-lightHtml p-4 dark:bg-darkHtml">
+    <Card v-if="resultMessage || error" class="af-mcp-confirm-card w-full max-w-lg">
       <template v-if="pending">
-        <h1 class="text-xl font-medium text-gray-900 dark:text-white">{{ title }}</h1>
-        <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
-          <b>{{ pending.connectionName }}</b>
+        <h1 :class="TITLE_CLASSES">{{ title }}</h1>
+        <p :class="TEXT_CLASSES">
+          <b class="font-semibold text-lightCardTitle dark:text-darkCardTitle">{{ pending.connectionName }}</b>
           {{ $t('asks to run this action on your behalf. | asks to run these actions on your behalf.', pending.actions.length) }}
         </p>
-        <p class="mt-4 text-sm font-medium" :class="failed ? 'text-red-700 dark:text-red-300' : 'text-green-700 dark:text-green-300'">
+        <p
+          class="af-mcp-confirm-result mt-4 flex items-start gap-2 text-sm font-medium"
+          :class="failed ? 'text-lightDanger dark:text-darkDanger' : 'text-lightSuccess dark:text-darkSuccess'"
+        >
+          <component :is="failed ? IconCircleAlert : IconCircleCheck" class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           {{ resultMessage }}
         </p>
-        <ul v-if="failedErrors.length" class="mt-2 list-disc space-y-1 pl-5 text-sm text-red-700 dark:text-red-300">
+        <ul v-if="failedErrors.length" class="mt-2 list-disc space-y-1 pl-10 text-sm text-lightDanger dark:text-darkDanger">
           <li v-for="(failedError, i) in failedErrors" :key="i">{{ failedError }}</li>
         </ul>
       </template>
       <template v-else>
-        <h1 class="text-xl font-medium text-gray-900 dark:text-white">{{ $t('Cannot run the action') }}</h1>
-        <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">{{ error }}</p>
+        <h1 :class="TITLE_CLASSES">{{ $t('Cannot run the action') }}</h1>
+        <p :class="TEXT_CLASSES">{{ error }}</p>
       </template>
-    </div>
+    </Card>
     <Spinner v-else-if="running" class="h-8 w-8" />
   </div>
 </template>
@@ -27,7 +31,8 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
-import { Spinner } from '@/afcl';
+import { Card, Spinner } from '@/afcl';
+import { IconCircleAlert, IconCircleCheck } from '@iconify-prerendered/vue-lucide';
 import { callAdminForthApi } from '@/utils';
 
 type PendingAction = {
@@ -41,6 +46,9 @@ type PendingConfirmation = {
   actions: PendingAction[];
 };
 type ActionResult = { id: string; output: { error?: string }; isError: boolean };
+
+const TITLE_CLASSES = 'text-lg font-semibold tracking-tight text-lightCardTitle dark:text-darkCardTitle';
+const TEXT_CLASSES = 'mt-2 text-sm text-lightCardDescription dark:text-darkCardDescription';
 const { t } = useI18n();
 const route = useRoute();
 const pending = ref<PendingConfirmation | null>(null);

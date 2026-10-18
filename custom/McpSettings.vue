@@ -1,18 +1,16 @@
 <template>
-  <div class="af-mcp-settings flex flex-col justify-center mr-6 md:mr-12">
-    <div class="flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h2 class="text-3xl font-semibold leading-none text-gray-800 dark:text-gray-50">
-          {{ $t('MCP Settings') }}
-        </h2>
-        <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
-          {{ $t('Connect an AI agent to {brand}. It acts on your behalf with your permissions.', { brand: brandName }) }}
-        </p>
-      </div>
-      <Button @click="openConnectDialog">
-        {{ $t('Connect agent') }}
-      </Button>
-    </div>
+  <div class="af-mcp-settings flex flex-col">
+    <PageHeader
+      :title="$t('MCP')"
+      :description="$t('Connect an AI agent to {brand}. It acts on your behalf with your permissions.', { brand: brandName })"
+    >
+      <template #actions>
+        <Button class="af-mcp-connect-button" @click="openConnectDialog">
+          <IconPlus class="w-4 h-4" aria-hidden="true" />
+          {{ $t('Connect agent') }}
+        </Button>
+      </template>
+    </PageHeader>
 
     <Table
       class="mt-6"
@@ -22,16 +20,16 @@
       :pageSize="10"
     >
       <template #cell:name="{ item }">
-        <p class="font-medium text-gray-900 dark:text-white">
+        <p class="flex flex-wrap items-center gap-2 font-medium text-lightFormFieldTextColor dark:text-darkFormFieldTextColor">
           {{ item.name }}
           <span
             v-if="serverReadOnly || item.readOnly"
-            class="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+            class="af-mcp-read-only-badge inline-flex h-5 items-center rounded-full bg-lightSecondaryDarken px-2 text-xs font-medium text-lightInputIconColor dark:bg-darkSecondaryLighten dark:text-darkInputIconColor"
           >
             {{ $t('Read only') }}
           </span>
         </p>
-        <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+        <p class="mt-0.5 text-xs text-lightInputIconColor dark:text-darkInputIconColor">
           {{ item.oauthClientId ? `${$t('OAuth')} · ${oauthClientHost(item.oauthClientId)}` : $t('Auth secret') }} · {{ formatDateTime(item.createdAt) }}
         </p>
       </template>
@@ -41,17 +39,20 @@
           <img v-if="describeAgent(item.lastUsedByAgent).icon" :src="describeAgent(item.lastUsedByAgent).icon" class="h-5 w-5" alt="" />
           <span>{{ describeAgent(item.lastUsedByAgent).label }}</span>
         </div>
-        <span v-else class="text-gray-400">{{ $t('Not used yet') }}</span>
+        <span v-else class="text-lightInputPlaceholderText dark:text-darkInputPlaceholderText">{{ $t('Not used yet') }}</span>
       </template>
 
       <template #cell:lastUsedAt="{ item }">
-        {{ item.lastUsedAt ? formatDateTime(item.lastUsedAt) : $t('Never') }}
+        <template v-if="item.lastUsedAt">{{ formatDateTime(item.lastUsedAt) }}</template>
+        <span v-else class="text-lightInputPlaceholderText dark:text-darkInputPlaceholderText">{{ $t('Never') }}</span>
       </template>
 
       <template #cell:actions="{ item }">
         <div class="flex justify-end">
           <Button
-            variant="danger"
+            class="af-mcp-revoke-button"
+            variant="secondary"
+            size="sm"
             :loader="revokingId === item.id"
             :disabled="revokingId === item.id"
             @click="revoke(item)"
@@ -64,33 +65,35 @@
 
     <Dialog
       ref="dialogRef"
-      class="w-full max-w-3xl"
+      class="af-mcp-connect-dialog w-full max-w-3xl"
       :header="$t('Connect an AI agent')"
       :buttons="dialogButtons"
     >
       <ButtonGroup v-model="activeClient">
         <template v-for="client in CLIENTS" :key="client" #[`button:${client}`]>
-          <span class="px-4 py-2">{{ client }}</span>
+          <span class="px-3.5 py-1.5">{{ client }}</span>
         </template>
       </ButtonGroup>
 
       <template v-if="showsCreatedSecret">
-        <p class="mt-4 text-sm text-amber-700 dark:text-amber-300">{{ $t('Copy it now. You will not be able to view it again.') }}</p>
-        <p class="mt-3 rounded-default border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
-          <template v-if="createdSecretReadOnly">
+        <p class="mt-4 text-sm font-medium text-lightWarning dark:text-darkWarning">{{ $t('Copy it now. You will not be able to view it again.') }}</p>
+        <div class="mt-3 flex items-start gap-2 rounded-default border border-lightWarningBorder bg-lightWarningSoft p-3 text-sm text-lightWarning dark:border-darkWarningBorder dark:bg-darkWarningSoft dark:text-darkWarning">
+          <IconTriangleAlert class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p v-if="createdSecretReadOnly">
             {{ $t('This secret lets an agent read all data you can see in the admin panel. Keep it like a password, give it to one agent only, and revoke it if that agent or its device is compromised.') }}
-          </template>
-          <template v-else>
+          </p>
+          <p v-else>
             {{ $t('This secret lets an agent do everything you can do in the admin panel, including deleting data and changing your security settings. Keep it like a password, give it to one agent only, and revoke it if that agent or its device is compromised.') }}
-          </template>
-        </p>
+          </p>
+        </div>
       </template>
 
-      <div v-for="step in activeSteps" :key="step.snippet" class="mt-4">
-        <p class="text-sm text-gray-500 dark:text-gray-400">{{ step.hint }}</p>
+      <div v-for="step in activeSteps" :key="step.snippet" class="af-mcp-setup-step mt-4">
+        <p class="text-sm text-lightInputIconColor dark:text-darkInputIconColor">{{ step.hint }}</p>
         <div class="mt-2 flex items-start gap-2">
-          <code class="min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-default bg-gray-100 px-3 py-2 text-sm text-gray-800 dark:bg-gray-900 dark:text-gray-100">{{ step.snippet }}</code>
+          <code :class="SNIPPET_CLASSES" class="min-w-0 flex-1 overflow-x-auto whitespace-pre">{{ step.snippet }}</code>
           <Button variant="secondary" @click="copy(step.snippet, $t('Copied'))">
+            <IconCopy class="w-4 h-4" aria-hidden="true" />
             {{ $t('Copy') }}
           </Button>
         </div>
@@ -98,8 +101,8 @@
 
       <!-- enter is handled on the wrapper so it fires once: Input spreads attrs on both its root and the input -->
       <div v-if="activeClient === 'Other' && !createdSecret" class="mt-4" @keydown.enter="createAuthSecret">
-        <p class="text-sm text-gray-500 dark:text-gray-400">{{ $t('Use one auth secret for one agent.') }}</p>
-        <label class="mt-5 block text-sm font-medium text-gray-700 dark:text-gray-200">{{ $t('Secret name') }}</label>
+        <p class="text-sm text-lightInputIconColor dark:text-darkInputIconColor">{{ $t('Use one auth secret for one agent.') }}</p>
+        <label class="mt-5 block text-sm font-medium text-lightTextLabel dark:text-darkTextLabel">{{ $t('Secret name') }}</label>
         <div class="mt-2">
           <Input v-model="secretName" type="text" fullWidth placeholder="Claude Code" />
         </div>
@@ -109,8 +112,8 @@
       </div>
 
       <template v-if="showsCreatedSecret">
-        <p class="mt-5 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">{{ $t('Prompt for your agent') }}</p>
-        <pre class="mt-2 whitespace-pre-wrap rounded-default bg-gray-100 p-3 text-sm text-gray-800 dark:bg-gray-900 dark:text-gray-100">{{ setupPrompt }}</pre>
+        <p class="mt-4 text-sm text-lightInputIconColor dark:text-darkInputIconColor">{{ $t('Prompt for your agent') }}</p>
+        <pre :class="SNIPPET_CLASSES" class="mt-2 whitespace-pre-wrap">{{ setupPrompt }}</pre>
       </template>
     </Dialog>
   </div>
@@ -119,7 +122,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Button, ButtonGroup, Checkbox, Dialog, Input, Table } from '@/afcl';
+import { Button, ButtonGroup, Checkbox, Dialog, Input, PageHeader, Table } from '@/afcl';
+import { IconCopy, IconPlus, IconTriangleAlert } from '@iconify-prerendered/vue-lucide';
 import { useCoreStore } from '@/stores/core';
 import adminforth from '@/adminforth';
 import { callAdminForthApi, formatDateTime } from '@/utils';
@@ -142,6 +146,7 @@ type Client = typeof CLIENTS[number];
 const CLIENTS = ['Claude Code', 'Codex', 'Other'] as const;
 const NON_SERVER_NAME_CHARACTER_RE = /[^a-z0-9]+/g;
 const EDGE_HYPHEN_RE = /^-+|-+$/g;
+const SNIPPET_CLASSES = 'rounded-default bg-lightSecondaryDarken px-3 py-1.5 font-mono text-[13px] leading-[22px] text-lightFormFieldTextColor dark:bg-darkSecondaryLighten dark:text-darkFormFieldTextColor';
 
 const { t } = useI18n();
 const coreStore = useCoreStore();

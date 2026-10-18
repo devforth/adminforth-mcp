@@ -1,18 +1,19 @@
 <template>
-  <div class="af-mcp-authorize flex min-h-screen items-center justify-center bg-gray-100 p-4 dark:bg-gray-800">
-    <div class="w-full max-w-lg rounded-lg bg-white p-6 shadow dark:bg-gray-700">
+  <div class="af-mcp-authorize flex min-h-screen items-center justify-center bg-lightHtml p-4 dark:bg-darkHtml">
+    <Spinner v-if="!framed && !authorization && !error" class="h-8 w-8" />
+    <Card v-else class="af-mcp-authorize-card w-full max-w-lg">
       <template v-if="framed">
-        <h1 class="text-xl font-medium text-gray-900 dark:text-white">{{ $t('Cannot connect MCP client') }}</h1>
-        <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
+        <h1 :class="TITLE_CLASSES">{{ $t('Cannot connect MCP client') }}</h1>
+        <p :class="TEXT_CLASSES">
           {{ $t('This page is embedded in another site. Open it in a separate browser tab to connect your MCP client.') }}
         </p>
       </template>
       <template v-else-if="authorization">
-        <h1 class="text-xl font-medium text-gray-900 dark:text-white">
+        <h1 :class="TITLE_CLASSES">
           {{ $t('Connect {client}?', { client: authorization.clientName }) }}
         </h1>
-        <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">
-          <b>{{ authorization.clientName }}</b>
+        <p :class="TEXT_CLASSES">
+          <b class="font-semibold text-lightCardTitle dark:text-darkCardTitle">{{ authorization.clientName }}</b>
           <span v-if="authorization.clientHost"> ({{ authorization.clientHost }})</span>
           <template v-if="readOnly">
             {{ $t('asks to act on your behalf in {brand}: it will see all data you can see, but not change it.', { brand: brandName }) }}
@@ -24,10 +25,14 @@
         <Checkbox v-model="readOnlyChosen" :disabled="authorization.serverReadOnly" class="mt-4">
           {{ $t('Read only: the agent can only read data') }}
         </Checkbox>
-        <p v-if="authorization.loopbackRedirect" class="mt-3 text-sm font-medium text-amber-700 dark:text-amber-300">
-          {{ $t('After you answer, your browser returns to an app running on this computer. Allow only if you have just started connecting {client} yourself.', { client: authorization.clientName }) }}
-        </p>
-        <p v-else class="mt-3 text-sm text-gray-600 dark:text-gray-300">
+        <div
+          v-if="authorization.loopbackRedirect"
+          class="mt-4 flex items-start gap-2 rounded-default border border-lightWarningBorder bg-lightWarningSoft p-3 text-sm text-lightWarning dark:border-darkWarningBorder dark:bg-darkWarningSoft dark:text-darkWarning"
+        >
+          <IconTriangleAlert class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p>{{ $t('After you answer, your browser returns to an app running on this computer. Allow only if you have just started connecting {client} yourself.', { client: authorization.clientName }) }}</p>
+        </div>
+        <p v-else :class="TEXT_CLASSES">
           {{ $t('After you answer, your browser returns to {host}.', { host: authorization.redirectHost }) }}
         </p>
         <div class="mt-6 flex justify-end gap-2">
@@ -35,24 +40,26 @@
           <Button :loader="resolving" :disabled="resolving || !armed" @click="resolve(true)">{{ $t('Allow') }}</Button>
         </div>
       </template>
-      <template v-else-if="error">
-        <h1 class="text-xl font-medium text-gray-900 dark:text-white">{{ $t('Cannot connect MCP client') }}</h1>
-        <p class="mt-3 text-sm text-gray-600 dark:text-gray-300">{{ error }}</p>
+      <template v-else>
+        <h1 :class="TITLE_CLASSES">{{ $t('Cannot connect MCP client') }}</h1>
+        <p :class="TEXT_CLASSES">{{ error }}</p>
       </template>
-      <Spinner v-else class="mx-auto h-8 w-8" />
-    </div>
+    </Card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { Button, Checkbox, Spinner } from '@/afcl';
+import { Button, Card, Checkbox, Spinner } from '@/afcl';
+import { IconTriangleAlert } from '@iconify-prerendered/vue-lucide';
 import { useCoreStore } from '@/stores/core';
 import { callAdminForthApi } from '@/utils';
 
 // Long enough to swallow the second click of a double click, too short for a reader to notice.
 const ALLOW_DELAY_MS = 500;
+const TITLE_CLASSES = 'text-lg font-semibold tracking-tight text-lightCardTitle dark:text-darkCardTitle';
+const TEXT_CLASSES = 'mt-2 text-sm text-lightCardDescription dark:text-darkCardDescription';
 
 type Authorization = {
   clientName: string;

@@ -106,8 +106,8 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     auth.userMenuSettingsPages ??= [];
     if (!auth.userMenuSettingsPages.some((page) => page.slug === 'mcp')) {
       auth.userMenuSettingsPages.push({
-        icon: 'flowbite:server-outline',
-        pageLabel: 'MCP Settings',
+        icon: 'lucide:bot',
+        pageLabel: 'MCP',
         slug: 'mcp',
         component: this.componentPath('McpSettings.vue'),
         isVisible: () => true,
