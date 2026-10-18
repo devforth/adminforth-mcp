@@ -1,33 +1,30 @@
 <template>
   <div class="af-mcp-authorize flex min-h-screen items-center justify-center bg-lightHtml p-4 dark:bg-darkHtml">
     <Spinner v-if="!framed && !authorization && !error" class="h-8 w-8" />
-    <Card v-else class="af-mcp-authorize-card w-full max-w-lg">
-      <template v-if="framed">
-        <h1 :class="TITLE_CLASSES">{{ $t('Cannot connect MCP client') }}</h1>
-        <p :class="TEXT_CLASSES">
-          {{ $t('This page is embedded in another site. Open it in a separate browser tab to connect your MCP client.') }}
-        </p>
-      </template>
+    <DialogPanel
+      v-else
+      class="af-mcp-authorize-card max-w-lg"
+      :title="authorization && !framed ? $t('Connect {client}?', { client: authorization.clientName }) : $t('Cannot connect MCP client')"
+    >
+      <template #icon><IconPlug /></template>
+      <p v-if="framed" :class="TEXT_CLASSES">
+        {{ $t('This page is embedded in another site. Open it in a separate browser tab to connect your MCP client.') }}
+      </p>
       <template v-else-if="authorization">
-        <h1 :class="TITLE_CLASSES">
-          {{ $t('Connect {client}?', { client: authorization.clientName }) }}
-        </h1>
         <p :class="TEXT_CLASSES">
-          <b class="font-semibold text-lightCardTitle dark:text-darkCardTitle">{{ authorization.clientName }}</b>
+          <b class="font-semibold text-lightDialogHeaderText dark:text-darkDialogHeaderText">{{ authorization.clientName }}</b>
           <span v-if="authorization.clientHost"> ({{ authorization.clientHost }})</span>
-          <template v-if="readOnly">
-            {{ $t('asks to act on your behalf in {brand}: it will see all data you can see, but not change it.', { brand: brandName }) }}
-          </template>
-          <template v-else>
-            {{ $t('asks to act on your behalf in {brand}: it will see and change everything you can.', { brand: brandName }) }}
-          </template>
+          <!-- the template compiler drops whitespace between tags, the client name needs a space before the text -->
+          {{ ' ' }}
+          <template v-if="readOnly">{{ $t('asks to act on your behalf in {brand}: it will see all data you can see, but not change it.', { brand: brandName }) }}</template>
+          <template v-else>{{ $t('asks to act on your behalf in {brand}: it will see and change everything you can.', { brand: brandName }) }}</template>
         </p>
-        <Checkbox v-model="readOnlyChosen" :disabled="authorization.serverReadOnly" class="mt-4">
+        <Checkbox v-model="readOnlyChosen" :disabled="authorization.serverReadOnly">
           {{ $t('Read only: the agent can only read data') }}
         </Checkbox>
         <div
           v-if="authorization.loopbackRedirect"
-          class="mt-4 flex items-start gap-2 rounded-default border border-lightWarningBorder bg-lightWarningSoft p-3 text-sm text-lightWarning dark:border-darkWarningBorder dark:bg-darkWarningSoft dark:text-darkWarning"
+          class="flex items-start gap-2 rounded-default border border-lightWarningBorder bg-lightWarningSoft p-3 text-sm text-lightWarning dark:border-darkWarningBorder dark:bg-darkWarningSoft dark:text-darkWarning"
         >
           <IconTriangleAlert class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <p>{{ $t('After you answer, your browser returns to an app running on this computer. Allow only if you have just started connecting {client} yourself.', { client: authorization.clientName }) }}</p>
@@ -35,31 +32,27 @@
         <p v-else :class="TEXT_CLASSES">
           {{ $t('After you answer, your browser returns to {host}.', { host: authorization.redirectHost }) }}
         </p>
-        <div class="mt-6 flex justify-end gap-2">
-          <Button variant="secondary" :disabled="resolving" @click="resolve(false)">{{ $t('Deny') }}</Button>
-          <Button :loader="resolving" :disabled="resolving || !armed" @click="resolve(true)">{{ $t('Allow') }}</Button>
-        </div>
       </template>
-      <template v-else>
-        <h1 :class="TITLE_CLASSES">{{ $t('Cannot connect MCP client') }}</h1>
-        <p :class="TEXT_CLASSES">{{ error }}</p>
+      <p v-else :class="TEXT_CLASSES">{{ error }}</p>
+      <template v-if="authorization && !framed" #footer>
+        <Button variant="secondary" :disabled="resolving" @click="resolve(false)">{{ $t('Deny') }}</Button>
+        <Button :loader="resolving" :disabled="resolving || !armed" @click="resolve(true)">{{ $t('Allow') }}</Button>
       </template>
-    </Card>
+    </DialogPanel>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { Button, Card, Checkbox, Spinner } from '@/afcl';
-import { IconTriangleAlert } from '@iconify-prerendered/vue-lucide';
+import { Button, Checkbox, DialogPanel, Spinner } from '@/afcl';
+import { IconPlug, IconTriangleAlert } from '@iconify-prerendered/vue-lucide';
 import { useCoreStore } from '@/stores/core';
 import { callAdminForthApi } from '@/utils';
 
 // Long enough to swallow the second click of a double click, too short for a reader to notice.
 const ALLOW_DELAY_MS = 500;
-const TITLE_CLASSES = 'text-lg font-semibold tracking-tight text-lightCardTitle dark:text-darkCardTitle';
-const TEXT_CLASSES = 'mt-2 text-sm text-lightCardDescription dark:text-darkCardDescription';
+const TEXT_CLASSES = 'text-sm text-lightDialogBodyText dark:text-darkDialogBodyText';
 
 type Authorization = {
   clientName: string;
