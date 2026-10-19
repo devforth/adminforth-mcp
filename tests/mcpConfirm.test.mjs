@@ -21,7 +21,7 @@ function page(verification, response = { results: [{ id: ACTION.id, output: { ok
     callAdminForthApi: async input => { calls.push(input); return response; },
   });
   vm.runInContext(script, context);
-  vm.runInContext(`pending.value = ${JSON.stringify({ connectionName: 'Claude Code', actions })}`, context);
+  vm.runInContext(`pending.value = ${JSON.stringify({ actions })}`, context);
   return { context, calls, modalCalls };
 }
 

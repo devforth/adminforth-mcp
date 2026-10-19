@@ -64,13 +64,12 @@ test('offers a confirmation only for the TWO_FACTOR_REQUIRED code', () => {
   }
 });
 
-test('describes the action with its description and the name of the MCP connection', () => {
+test('describes the action with its description', () => {
   const { confirmation } = setup();
   const required = { ...REQUIRED, actionDescription: 'Approve listing of car 42' };
   const { output } = confirmation.offer(required, CONNECTION, USER, '/start_custom_action', ARGS);
   const description = confirmation.describe(output.confirmationId, USER);
   assert.equal(description.actions[0].actionDescription, 'Approve listing of car 42');
-  assert.equal(description.connectionName, 'Claude Code');
 });
 
 test('groups the link with up to 20 other pending actions of the same connection', () => {
