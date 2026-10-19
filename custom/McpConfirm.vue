@@ -7,10 +7,6 @@
     >
       <template #icon><IconBot /></template>
       <template v-if="pending">
-        <p :class="TEXT_CLASSES">
-          <b class="font-semibold text-lightDialogHeaderText dark:text-darkDialogHeaderText">{{ pending.connectionName }}</b>
-          {{ $t('asks to run this action on your behalf. | asks to run these actions on your behalf.', pending.actions.length) }}
-        </p>
         <p
           class="af-mcp-confirm-result flex items-start gap-2 text-sm font-medium"
           :class="failed ? 'text-lightDanger dark:text-darkDanger' : 'text-lightSuccess dark:text-darkSuccess'"
@@ -43,7 +39,6 @@ type PendingAction = {
   arguments: Record<string, unknown>;
 };
 type PendingConfirmation = {
-  connectionName: string;
   actions: PendingAction[];
 };
 type ActionResult = { id: string; output: { error?: string }; isError: boolean };

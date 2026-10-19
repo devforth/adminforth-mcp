@@ -124,7 +124,6 @@ export class McpAdminPanelConfirmation {
       && actsAsOne(other, pending)
       && !('error' in this.open(other.id, adminUser)));
     return {
-      connectionName: pending.connection.name,
       actions: [pending, ...others].slice(0, MAX_ACTIONS_PER_CONFIRMATION).map((action) => ({
         id: action.id,
         actionDescription: action.actionDescription,
