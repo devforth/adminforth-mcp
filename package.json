@@ -42,14 +42,14 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "latest",
-    "adminforth": "^3.32.0",
+    "adminforth": "^4.7.3",
     "express": "^5.2.1",
     "semantic-release": "^24.2.1",
     "semantic-release-slack-bot": "^4.0.2",
     "typescript": "^5.7.3"
   },
   "peerDependencies": {
-    "adminforth": "^4.6.0",
+    "adminforth": "^4.7.3",
     "express": "^4.21.0 || ^5.0.0"
   },
   "release": {
