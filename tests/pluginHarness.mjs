@@ -64,6 +64,10 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
       records.push(record);
       return { ok: true };
     },
+    updateResourceRecord: async ({ recordId, updates }) => {
+      Object.assign(records.find((record) => record.id === recordId), updates);
+      return { error: null };
+    },
   };
 
   const plugin = new AdminForthMcpPlugin({

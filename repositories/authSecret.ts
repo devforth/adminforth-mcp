@@ -9,6 +9,7 @@ import {
   type IAdminForth,
   type IAdminForthSingleFilter,
   type IOperationalResource,
+  type UpdateResourceRecordResult,
 } from 'adminforth';
 import type { McpAuthSecretResourceOptions, McpClientInfo } from '../types.js';
 
@@ -77,16 +78,32 @@ export class AuthSecretRepository {
   }
 
   async deleteByIdAndUser(id: string, adminUser: AdminUser, extra: HttpExtra): Promise<DeleteResourceRecordResult | null> {
-    const record = await this.records().get(Filters.AND(
-      Filters.EQ(this.fields.idField, id),
-      Filters.EQ(this.fields.userIdField, adminUser.pk!),
-    ));
+    const record = await this.findRecordOfUser(id, adminUser);
     if (!record) return null;
 
     return this.adminforth.deleteResourceRecord({
       resource: this.resource,
       record,
       recordId: id,
+      adminUser,
+      extra,
+    });
+  }
+
+  async updateReadOnlyByIdAndUser(
+    id: string,
+    readOnly: boolean,
+    adminUser: AdminUser,
+    extra: HttpExtra,
+  ): Promise<UpdateResourceRecordResult | null> {
+    const oldRecord = await this.findRecordOfUser(id, adminUser);
+    if (!oldRecord) return null;
+
+    return this.adminforth.updateResourceRecord({
+      resource: this.resource,
+      recordId: id,
+      oldRecord,
+      updates: { [this.fields.readOnlyField]: readOnly },
       adminUser,
       extra,
     });
@@ -105,6 +122,13 @@ export class AuthSecretRepository {
       [this.fields.lastUsedAtField]: new Date().toISOString(),
       ...(client && { [this.fields.lastUsedByAgentField]: JSON.stringify(client) }),
     });
+  }
+
+  private findRecordOfUser(id: string, adminUser: AdminUser): Promise<Record<string, any> | null> {
+    return this.records().get(Filters.AND(
+      Filters.EQ(this.fields.idField, id),
+      Filters.EQ(this.fields.userIdField, adminUser.pk!),
+    ));
   }
 
   private records(): IOperationalResource {

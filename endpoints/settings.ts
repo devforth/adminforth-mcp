@@ -4,8 +4,10 @@ import { requestExtra } from '../requestExtra.js';
 import {
   createAuthSecretBodySchema,
   revokeAuthSecretBodySchema,
+  updateAuthSecretBodySchema,
   type CreateAuthSecretBody,
   type RevokeAuthSecretBody,
+  type UpdateAuthSecretBody,
 } from '../schemas/settings.js';
 import type { ServerReadOnly } from '../serverReadOnly.js';
 import { MCP_PATH } from '../urls.js';
@@ -44,6 +46,26 @@ export function registerSettingsEndpoints(
         input.adminUser,
         requestExtra(input),
       );
+    },
+  });
+
+  server.endpoint({
+    method: 'PATCH',
+    path: `${MCP_PATH}/auth-secrets`,
+    agent: {
+      hiddenFromAgents: true,
+    },
+    request_schema: updateAuthSecretBodySchema,
+    handler: async (input) => {
+      const body: UpdateAuthSecretBody = input.body;
+      const result = await authSecretStore.setReadOnly(
+        body.id,
+        body.readOnly || await serverReadOnly(input.adminUser),
+        input.adminUser,
+        requestExtra(input),
+      );
+      if (result.error) input.response.setStatus(404);
+      return result;
     },
   });
 

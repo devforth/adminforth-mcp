@@ -20,18 +20,18 @@
       :pageSize="10"
     >
       <template #cell:name="{ item }">
-        <p class="flex flex-wrap items-center gap-2 font-medium text-lightFormFieldTextColor dark:text-darkFormFieldTextColor">
-          {{ item.name }}
-          <span
-            v-if="serverReadOnly || item.readOnly"
-            class="af-mcp-read-only-badge inline-flex h-5 items-center rounded-full bg-lightSecondaryDarken px-2 text-xs font-medium text-lightInputIconColor dark:bg-darkSecondaryLighten dark:text-darkInputIconColor"
-          >
-            {{ $t('Read only') }}
-          </span>
-        </p>
+        <p class="font-medium text-lightFormFieldTextColor dark:text-darkFormFieldTextColor">{{ item.name }}</p>
         <p class="mt-0.5 text-xs text-lightInputIconColor dark:text-darkInputIconColor">
           {{ item.oauthClientId ? `${$t('OAuth')} · ${oauthClientHost(item.oauthClientId)}` : $t('Auth secret') }} · {{ formatDateTime(item.createdAt) }}
         </p>
+      </template>
+
+      <template #cell:readOnly="{ item }">
+        <Toggle
+          :modelValue="serverReadOnly || item.readOnly"
+          :disabled="serverReadOnly || updatingId === item.id"
+          @update:modelValue="setReadOnly(item, $event)"
+        />
       </template>
 
       <template #cell:lastUsedByAgent="{ item }">
@@ -122,7 +122,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Button, ButtonGroup, Checkbox, Dialog, Input, PageHeader, Table } from '@/afcl';
+import { Button, ButtonGroup, Checkbox, Dialog, Input, PageHeader, Table, Toggle } from '@/afcl';
 import { IconCopy, IconPlus, IconTriangleAlert } from '@iconify-prerendered/vue-lucide';
 import { useCoreStore } from '@/stores/core';
 import adminforth from '@/adminforth';
@@ -165,9 +165,11 @@ const serverReadOnly = ref(false);
 const createdSecret = ref('');
 const creating = ref(false);
 const revokingId = ref<string | null>(null);
+const updatingId = ref<string | null>(null);
 
 const columns = computed(() => [
   { label: t('Name'), fieldName: 'name', sortable: true },
+  { label: t('Read only'), fieldName: 'readOnly' },
   { label: t('Last used by'), fieldName: 'lastUsedByAgent' },
   { label: t('Last usage'), fieldName: 'lastUsedAt', sortable: true },
   { label: t('Actions'), fieldName: 'actions' },
@@ -288,6 +290,32 @@ async function createAuthSecret() {
     }
   } finally {
     creating.value = false;
+  }
+}
+
+async function setReadOnly(authSecret: AuthSecret, readOnly: boolean) {
+  authSecret.readOnly = readOnly;
+  updatingId.value = authSecret.id;
+  try {
+    const confirmed = readOnly || await adminforth.confirm({
+      message: t('Allow "{name}" to do everything you can do in the admin panel, including deleting data and changing your security settings?', { name: authSecret.name }),
+      yes: t('Allow'),
+      no: t('Cancel'),
+      dangerous: true,
+    });
+    if (confirmed) {
+      const response = await callAdminForthApi({
+        method: 'PATCH',
+        path: '/mcp/auth-secrets',
+        body: { id: authSecret.id, readOnly },
+      });
+      if (response && !response.error && !readOnly) {
+        adminforth.alert({ message: t('Reconnect the agent so it loads the tools that change data.'), variant: 'success' });
+      }
+    }
+    await loadAuthSecrets();
+  } finally {
+    updatingId.value = null;
   }
 }
 

@@ -180,6 +180,44 @@ test('requires the oauthClientIdField column in the auth secret resource', () =>
   assert.throws(() => plugin.modifyGlobalConfig(adminforth), /column "oauth_client_id" not found/);
 });
 
+test('changes read-only mode of own connections within the readOnly option', async () => {
+  const writers = new Set();
+  const other = { pk: 'user-2', username: 'other@example.com' };
+  const { endpoints, records, callMcp } = createPlugin({
+    readOnly: async ({ adminUser }) => !writers.has(adminUser.pk),
+    registeredSchemas: TOOL_SCHEMAS,
+  });
+  let status = 200;
+  const setReadOnly = (readOnly, adminUser = OWNER) => endpoints.get('PATCH /mcp/auth-secrets').handler({
+    body: { id: records[0].id, readOnly },
+    adminUser,
+    headers: {},
+    query: {},
+    cookies: [],
+    response: { setHeader: () => {}, setStatus: (code) => { status = code; } },
+  });
+
+  const secret = await createSecret(endpoints);
+  writers.add('user-1');
+  assert.equal(records[0].read_only, true);
+  assert.deepEqual(await listTools(callMcp, secret), ['get_resource', 'fetch_skill']);
+
+  assert.deepEqual(await setReadOnly(false, other), { error: 'MCP auth secret not found' });
+  assert.equal(status, 404);
+  assert.equal(records[0].read_only, true);
+
+  await setReadOnly(false);
+  assert.equal(records[0].read_only, false);
+  assert.deepEqual(await listTools(callMcp, secret), ['delete_record', 'get_resource', 'fetch_skill']);
+
+  await setReadOnly(true);
+  assert.equal(records[0].read_only, true);
+
+  writers.delete('user-1');
+  await setReadOnly(false);
+  assert.equal(records[0].read_only, true);
+});
+
 test('applies a readOnly function to the user of every request', async () => {
   const writers = new Set(['user-2']);
   const other = { pk: 'user-2', username: 'other@example.com' };

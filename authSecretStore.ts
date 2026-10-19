@@ -12,6 +12,7 @@ import type { AuthSecret, AuthSecretRepository } from './repositories/authSecret
 import type { McpClientInfo } from './types.js';
 
 export const SECRET_PREFIX = 'afmcp_';
+const NOT_FOUND_ERROR = 'MCP auth secret not found';
 
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
 
@@ -63,7 +64,11 @@ export class McpAuthSecretStore {
   }
 
   async revoke(id: string, adminUser: AdminUser, extra: HttpExtra) {
-    return await this.repository.deleteByIdAndUser(id, adminUser, extra) ?? { error: 'MCP auth secret not found' };
+    return await this.repository.deleteByIdAndUser(id, adminUser, extra) ?? { error: NOT_FOUND_ERROR };
+  }
+
+  async setReadOnly(id: string, readOnly: boolean, adminUser: AdminUser, extra: HttpExtra) {
+    return await this.repository.updateReadOnlyByIdAndUser(id, readOnly, adminUser, extra) ?? { error: NOT_FOUND_ERROR };
   }
 
   async authenticate(secret: string): Promise<AuthenticatedMcpSecret | null> {
