@@ -45,8 +45,8 @@ export function createPlugin({
       customization: { brandName: 'Test Admin', customPages: [], customComponentsDir },
       globalPlugins,
       resources: [
-        { resourceId: 'mcp_auth_secrets', columns },
-        { resourceId: 'admin_users', columns: [{ name: 'id', primaryKey: true }], plugins: resourcePlugins },
+        { resourceId: 'mcp_auth_secrets', columns, options: {} },
+        { resourceId: 'admin_users', columns: [{ name: 'id', primaryKey: true }], options: {}, plugins: resourcePlugins },
       ],
     },
     codeInjector: { srcFoldersToSync: {}, allComponentNames: {} },

@@ -113,6 +113,13 @@ test('registers the OAuth endpoints and the consent page', () => {
   assert.deepEqual(adminforth.config.customization.customPages.map((page) => page.path), ['/mcp-authorize']);
 });
 
+test('hides the auth secret resource from agents', () => {
+  const { adminforth } = createPlugin();
+
+  const authSecrets = adminforth.config.resources.find(({ resourceId }) => resourceId === 'mcp_auth_secrets');
+  assert.deepEqual(authSecrets.options.agent, { hiddenFromAgents: true });
+});
+
 test('offers admin panel confirmation only with a 2FA plugin that verifies external requests', async () => {
   const contextualTwoFactorsAuth = { withVerificationContext: (verificationResult, extra, callback) => callback() };
   for (const [twoFactorsAuth, offered] of [[undefined, false], [{}, false], [contextualTwoFactorsAuth, true]]) {

@@ -91,6 +91,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     }
 
     this.validateAuthSecretResource(authSecretResource);
+    authSecretResource.options.agent = { ...authSecretResource.options.agent, hiddenFromAgents: true };
     const secretHashColumn = authSecretResource.columns.find(
       (column) => column.name === this.options.authSecretResource.secretHashField,
     )!;
@@ -146,10 +147,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       default: this.options.pageSize?.default ?? DEFAULT_PAGE_SIZE,
       max: this.options.pageSize?.max ?? MAX_PAGE_SIZE,
     };
-    this.resourceVisibility = new McpResourceVisibility(
-      adminforth,
-      new Set([this.options.authSecretResource.resourceId]),
-    );
+    this.resourceVisibility = new McpResourceVisibility(adminforth);
     this.apiTools = new AdminForthApiTools(
       adminforth,
       this.resourceVisibility,

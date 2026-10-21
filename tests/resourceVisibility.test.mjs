@@ -4,12 +4,12 @@ import { McpResourceVisibility } from '../dist/resourceVisibility.js';
 
 const ADMIN_USER = { pk: '1', dbUser: { role: 'manager' } };
 
-function resource(resourceId, allowedActions) {
-  return { resourceId, options: { allowedActions: { create: true, edit: true, delete: true, ...allowedActions } } };
+function resource(resourceId, allowedActions, options = {}) {
+  return { resourceId, options: { allowedActions: { create: true, edit: true, delete: true, ...allowedActions }, ...options } };
 }
 
-function createVisibility(resources, hiddenResourceIds = []) {
-  return new McpResourceVisibility({ config: { resources } }, new Set(hiddenResourceIds));
+function createVisibility(resources) {
+  return new McpResourceVisibility({ config: { resources } });
 }
 
 test('shows resources whose records the user may list or show', async () => {
@@ -41,11 +41,10 @@ test('resolves list and show functions for the user', async () => {
   assert.equal(await visibility.isVisible(ADMIN_USER, 'admins'), false);
 });
 
-test('hides resources hidden from MCP and unknown resources', async () => {
-  const visibility = createVisibility(
-    [resource('mcp_auth_secrets', { list: true, show: true })],
-    ['mcp_auth_secrets'],
-  );
+test('hides resources hidden from agents and unknown resources', async () => {
+  const visibility = createVisibility([
+    resource('mcp_auth_secrets', { list: true, show: true }, { agent: { hiddenFromAgents: true } }),
+  ]);
 
   assert.deepEqual(await visibility.visibleResources(ADMIN_USER), []);
   assert.equal(await visibility.isVisible(ADMIN_USER, 'mcp_auth_secrets'), false);

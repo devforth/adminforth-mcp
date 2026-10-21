@@ -7,10 +7,7 @@ import {
 } from 'adminforth';
 
 export class McpResourceVisibility {
-  constructor(
-    private readonly adminforth: IAdminForth,
-    private readonly hiddenResourceIds: ReadonlySet<string>,
-  ) {}
+  constructor(private readonly adminforth: IAdminForth) {}
 
   async visibleResources(adminUser: AdminUser): Promise<AdminForthResource[]> {
     const resources = this.adminforth.config.resources;
@@ -24,7 +21,7 @@ export class McpResourceVisibility {
   }
 
   private async canListOrShow(adminUser: AdminUser, resource: AdminForthResource): Promise<boolean> {
-    if (this.hiddenResourceIds.has(resource.resourceId)) return false;
+    if (resource.options.agent?.hiddenFromAgents) return false;
     const [{ allowedActions: { list } }, { allowedActions: { show } }] = await Promise.all([
       interpretResource(adminUser, resource, {}, ActionCheckSource.ListRequest, this.adminforth),
       interpretResource(adminUser, resource, {}, ActionCheckSource.ShowRequest, this.adminforth),
