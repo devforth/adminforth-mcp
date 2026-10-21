@@ -8,9 +8,10 @@ import {
 } from 'adminforth';
 import { McpAdminPanelConfirmation, WAIT_FOR_CONFIRMATION_TOOL_NAME } from './adminPanelConfirmation.js';
 import { registerConfirmationEndpoints } from './endpoints/confirmation.js';
+import type { Transport } from '@modelcontextprotocol/server';
 import { AdminForthApiTools } from './apiTools.js';
 import { formatMcpExecutedBy, readMcpClient, UNKNOWN_CLIENT } from './clientInfo.js';
-import { createMcpServerPresentation, McpProtocol } from './mcpProtocol.js';
+import { createMcpServerPresentation, McpProtocol, type McpProtocolContext } from './mcpProtocol.js';
 import { McpAuthSecretStore, SECRET_PREFIX } from './authSecretStore.js';
 import { registerMcpEndpoints } from './endpoints/mcp.js';
 import { registerOAuthEndpoints } from './endpoints/oAuth.js';
@@ -24,7 +25,7 @@ import { McpResourceVisibility } from './resourceVisibility.js';
 import { createServerReadOnly, type ServerReadOnly } from './serverReadOnly.js';
 import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
 import { findContextualTwoFactorsAuth } from './twoFactorContext.js';
-import type { PluginOptions } from './types.js';
+import type { McpSession, PluginOptions } from './types.js';
 import { adminApiPrefix, CONFIRMATION_PAGE_PATH, createMcpUrls, type McpUrls } from './urls.js';
 
 const BEARER_TOKEN_RE = /^Bearer (\S+)$/i;
@@ -37,8 +38,8 @@ const DEFAULT_TOOL_CALLS_PER_REQUEST = 10;
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
 
 /**
- * The MCP auth secret is a long-lived credential, so it is dropped as soon as it is verified and
- * never reaches tool handlers, which may log, persist or forward the headers they are given.
+ * Credentials never reach tool handlers, which may log, persist or forward the headers they are given: neither the
+ * long-lived MCP auth secret of an HTTP request nor the admin session cookie of an in-memory connection.
  */
 function withoutCredentials(headers: Record<string, any>): Record<string, any> {
   return Object.fromEntries(
@@ -156,11 +157,23 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       toolTimeoutMs,
       this.adminPanelConfirmation,
     );
-    this.skills = new McpSkills(this.customFolderPath, {
-      'pageSize.default': pageSize.default,
-      'pageSize.max': pageSize.max,
-      toolCallsPerRequest: this.options.toolCallsPerRequest ?? DEFAULT_TOOL_CALLS_PER_REQUEST,
-    });
+    const { customComponentsDir } = adminforth.config.customization;
+    const otherPlugins = [
+      ...(adminforth.config.globalPlugins ?? []),
+      ...adminforth.config.resources.flatMap((resource) => resource.plugins ?? []),
+    ].filter((plugin) => plugin !== this);
+    this.skills = new McpSkills(
+      this.customFolderPath,
+      {
+        'pageSize.default': pageSize.default,
+        'pageSize.max': pageSize.max,
+        toolCallsPerRequest: this.options.toolCallsPerRequest ?? DEFAULT_TOOL_CALLS_PER_REQUEST,
+      },
+      [...new Set([
+        ...(customComponentsDir ? [customComponentsDir] : []),
+        ...otherPlugins.map((plugin) => plugin.customFolderPath),
+      ])],
+    );
   }
 
   private validateAuthSecretResource(resource: AdminForthResource): void {
@@ -237,8 +250,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       return jsonRpcAuthError(input.body.id ?? null);
     }
 
-    const toolHeaders = withoutCredentials(input.headers);
-    const reportedClient = readMcpClient(input.body, toolHeaders);
+    const reportedClient = readMcpClient(input.body, input.headers);
     const client = reportedClient.client === UNKNOWN_CLIENT && authenticated.client
       ? authenticated.client
       : reportedClient;
@@ -248,45 +260,61 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       ...authenticated.adminUser,
       executedBy: formatMcpExecutedBy(client, authenticated.name),
     };
-    const readOnly = authenticated.readOnly || await this.serverReadOnly(authenticated.adminUser);
     const protocolResponse = await this.protocol.handle(
-      new Request(this.urls.mcpUrl, { method: 'POST', headers: toolHeaders }),
+      new Request(this.urls.mcpUrl, { method: 'POST', headers: input.headers, signal: input.abortSignal }),
       input.body,
-      {
-        ...createMcpServerPresentation(
-          this.adminforth.config.customization.brandName,
-          this.urls.adminPanelUrl,
-          this.skills.serverInstructions(),
-          readOnly,
-        ),
-        listTools: () => [
-          ...this.apiTools.list(readOnly),
-          this.skills.toolDefinition(),
-          ...(this.adminPanelConfirmation ? [this.adminPanelConfirmation.toolDefinition()] : []),
-        ],
-        callTool: async (name, arguments_) => {
-          if (name === FETCH_SKILL_TOOL_NAME) return this.skills.call(arguments_);
-          if (name === WAIT_FOR_CONFIRMATION_TOOL_NAME && this.adminPanelConfirmation) {
-            return this.adminPanelConfirmation.wait(String(arguments_?.confirmationId), authenticated.recordId);
-          }
-          return this.apiTools.call({
-            name,
-            arguments: arguments_,
-            adminUser,
-            headers: toolHeaders,
-            requestUrl: input.requestUrl,
-            abortSignal: input.abortSignal,
-            readOnly,
-            connection: { id: authenticated.recordId, name: authenticated.name },
-          });
-        },
-      },
+      await this.sessionContext({
+        adminUser,
+        connection: { id: authenticated.recordId, name: authenticated.name },
+        readOnly: authenticated.readOnly,
+        headers: input.headers,
+        requestUrl: input.requestUrl,
+      }),
     );
 
     protocolResponse.headers.forEach((value, name) => input.response.setHeader(name, value));
     input.response.setStatus(protocolResponse.status, await protocolResponse.text());
   }
+
+  async openConnection(session: McpSession): Promise<Transport> {
+    return this.protocol.open(await this.sessionContext(session));
+  }
+
+  private async sessionContext(session: McpSession): Promise<McpProtocolContext> {
+    const readOnly = session.readOnly || await this.serverReadOnly(session.adminUser);
+    const headers = withoutCredentials(session.headers);
+    return {
+      ...createMcpServerPresentation(
+        this.adminforth.config.customization.brandName,
+        this.urls.adminPanelUrl,
+        this.skills.serverInstructions(),
+        readOnly,
+      ),
+      listTools: () => [
+        ...this.apiTools.list(readOnly),
+        this.skills.toolDefinition(),
+        ...(this.adminPanelConfirmation ? [this.adminPanelConfirmation.toolDefinition()] : []),
+      ],
+      callTool: async (name, arguments_, signal) => {
+        if (name === FETCH_SKILL_TOOL_NAME) return this.skills.call(arguments_);
+        if (name === WAIT_FOR_CONFIRMATION_TOOL_NAME && this.adminPanelConfirmation) {
+          return this.adminPanelConfirmation.wait(String(arguments_?.confirmationId), session.connection.id);
+        }
+        return this.apiTools.call({
+          name,
+          arguments: arguments_,
+          adminUser: session.adminUser,
+          headers,
+          requestUrl: session.requestUrl,
+          abortSignal: signal,
+          readOnly,
+          connection: session.connection,
+          timeZone: session.timeZone,
+        });
+      },
+    };
+  }
 }
 
-export type { McpAuthSecretResourceOptions, McpOAuthClient, PluginOptions } from './types.js';
+export type { McpAuthSecretResourceOptions, McpOAuthClient, McpSession, PluginOptions } from './types.js';
 export { canonicalAgentName, formatMcpExecutedBy, readMcpClient } from './clientInfo.js';

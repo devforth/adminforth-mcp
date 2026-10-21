@@ -1,4 +1,5 @@
 import type { AdminUser, PluginsCommonOptions } from 'adminforth';
+import type { McpConnection } from './adminPanelConfirmation.js';
 
 export interface McpAuthSecretResourceOptions {
   resourceId: string;
@@ -60,4 +61,14 @@ export interface PluginOptions extends PluginsCommonOptions {
 export interface McpClientInfo {
   client: string;
   ver: string | null;
+}
+
+export interface McpSession {
+  adminUser: AdminUser;
+  connection: McpConnection;
+  readOnly: boolean;
+  headers: Record<string, any>;
+  requestUrl: string;
+  /** IANA time zone, e.g. Europe/Kyiv, to show datetimes of get_resource_data in. Without it they are UTC. */
+  timeZone?: string;
 }

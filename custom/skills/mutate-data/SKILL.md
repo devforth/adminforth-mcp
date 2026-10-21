@@ -1,5 +1,5 @@
 ---
-name: mutate_data
+name: mutate-data
 description: Create, update or delete records and run custom actions. Load it before any change.
 ---
 

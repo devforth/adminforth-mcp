@@ -1,5 +1,5 @@
 ---
-name: fetch_data
+name: fetch-data
 description: Find, list and show records with get_resource_data.
 ---
 

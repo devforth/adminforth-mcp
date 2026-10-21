@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import express from 'express';
 import AdminForthMcpPlugin from '../dist/index.js';
+import { connectClient } from './inMemoryClient.mjs';
 import { createPlugin, SECRET_OPTIONS } from './pluginHarness.mjs';
 
 const CLIENT_ID = 'https://client.example/metadata.json';
@@ -237,4 +241,99 @@ test('applies a readOnly function to the user of every request', async () => {
   assert.deepEqual(await listTools(callMcp, secret), ['delete_record', 'get_resource', 'fetch_skill']);
   writers.delete('user-2');
   assert.deepEqual(await listTools(callMcp, secret), ['get_resource', 'fetch_skill']);
+});
+
+const AGENT_SESSION = {
+  adminUser: { ...OWNER, executedBy: 'af-agent' },
+  connection: { id: 'agent-session-1', name: 'Agent' },
+  readOnly: false,
+  headers: { 'accept-language': 'uk', cookie: 'adminforth_jwt=session', Authorization: 'Bearer session' },
+  requestUrl: '/adminapi/v1/agent/turn',
+};
+
+function recordingToolSchemas(calls, handler = async () => ({ ok: true })) {
+  return TOOL_SCHEMAS.map((schema) => ({
+    ...schema,
+    handler: (input) => {
+      calls.push(input);
+      return handler(input);
+    },
+  }));
+}
+
+function skillsFolder(skillNames) {
+  const folder = mkdtempSync(join(tmpdir(), 'adminforth-mcp-custom-'));
+  for (const name of skillNames) {
+    mkdirSync(join(folder, 'skills', name), { recursive: true });
+    writeFileSync(join(folder, 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}.\n---\n${name} body.\n`);
+  }
+  return folder;
+}
+
+test('opens an in-memory connection that calls tools as the session user', async () => {
+  const calls = [];
+  const { plugin } = createPlugin({ registeredSchemas: recordingToolSchemas(calls) });
+  const client = await connectClient(await plugin.openConnection(AGENT_SESSION));
+
+  assert.match(client.initialize.instructions, /fetch_skill/);
+  assert.deepEqual((await client.call('tools/list')).tools.map((tool) => tool.name), ['delete_record', 'get_resource', 'fetch_skill']);
+  const result = await client.call('tools/call', { name: 'delete_record', arguments: {} });
+  assert.equal(result.isError, false);
+  assert.equal(calls[0].adminUser, AGENT_SESSION.adminUser);
+  assert.deepEqual(calls[0].headers, { 'accept-language': 'uk' });
+  assert.equal(calls[0].requestUrl, AGENT_SESSION.requestUrl);
+});
+
+test('does not pass the MCP auth secret to tool handlers', async () => {
+  const calls = [];
+  const { endpoints, callMcp } = createPlugin({ registeredSchemas: recordingToolSchemas(calls) });
+  const secret = await createSecret(endpoints);
+
+  await callMcp(`Bearer ${secret}`, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_resource', arguments: {} } });
+
+  assert.equal(calls.length, 1);
+  assert.equal('authorization' in calls[0].headers, false);
+});
+
+test('applies the readOnly option to in-memory connections', async () => {
+  const { plugin } = createPlugin({ readOnly: true, registeredSchemas: TOOL_SCHEMAS });
+  const client = await connectClient(await plugin.openConnection(AGENT_SESSION));
+
+  assert.deepEqual((await client.call('tools/list')).tools.map((tool) => tool.name), ['get_resource', 'fetch_skill']);
+});
+
+test('aborts a tool call when its MCP HTTP request is aborted', async () => {
+  const calls = [];
+  const { endpoints, callMcp } = createPlugin({
+    registeredSchemas: recordingToolSchemas(calls, ({ abortSignal }) => new Promise((resolve) => {
+      abortSignal.addEventListener('abort', () => resolve({ error: 'Aborted' }));
+    })),
+  });
+  const secret = await createSecret(endpoints);
+  const controller = new AbortController();
+
+  const call = callMcp(
+    `Bearer ${secret}`,
+    { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_resource', arguments: {} } },
+    { abortSignal: controller.signal },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await call.catch(() => {});
+  assert.equal(calls[0].abortSignal.aborted, true);
+});
+
+test('offers skills of the project and of other plugins', async () => {
+  const { plugin } = createPlugin({
+    customComponentsDir: skillsFolder(['project-skill']),
+    globalPlugins: [{ customFolderPath: skillsFolder(['global-plugin-skill']) }, { customFolderPath: join(tmpdir(), 'no-such-plugin') }],
+    resourcePlugins: [{ customFolderPath: skillsFolder(['resource-plugin-skill']) }],
+  });
+  const client = await connectClient(await plugin.openConnection(AGENT_SESSION));
+  const fetchSkill = (await client.call('tools/list')).tools.find((tool) => tool.name === 'fetch_skill');
+
+  assert.deepEqual(
+    fetchSkill.inputSchema.properties.skillName.enum,
+    ['analyze-data', 'fetch-data', 'global-plugin-skill', 'mutate-data', 'project-skill', 'resource-plugin-skill'],
+  );
 });

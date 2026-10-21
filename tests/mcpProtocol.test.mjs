@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMcpServerPresentation, McpProtocol } from '../dist/mcpProtocol.js';
+import { connectClient } from './inMemoryClient.mjs';
 
 const SSE_DATA_RE = /^data: (.+)$/m;
 
@@ -101,7 +102,7 @@ test('serializes tool output as YAML, dropping values JSON cannot hold', async (
 });
 
 test('passes string tool output as is', async () => {
-  const call = await callTool('fetch_skill', { skillName: 'fetch_data' }, '# Fetch data\n');
+  const call = await callTool('fetch_skill', { skillName: 'fetch-data' }, '# Fetch data\n');
 
   assert.equal(call.body.result.content[0].text, '# Fetch data\n');
 });
@@ -122,4 +123,24 @@ test('answers a tool call whose handler returns nothing', async () => {
 
   assert.equal(call.body.result.isError, false);
   assert.equal(call.body.result.content[0].text, 'null\n');
+});
+
+test('serves an in-memory connection and aborts the tool call the client cancels', async () => {
+  const signals = [];
+  const client = await connectClient(await protocol.open({
+    ...serverPresentation,
+    listTools: () => [{ name: 'slow', inputSchema: { type: 'object' } }],
+    callTool: (name, arguments_, signal) => new Promise((resolve) => {
+      signals.push(signal);
+      signal.addEventListener('abort', () => resolve({ output: null, isError: true }));
+    }),
+  }));
+  assert.equal(client.initialize.serverInfo.title, 'Acme Cars Admin Panel');
+  assert.deepEqual((await client.call('tools/list')).tools.map((tool) => tool.name), ['slow']);
+
+  const { id } = client.request('tools/call', { name: 'slow', arguments: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(signals[0].aborted, false);
+  await client.cancel(id);
+  assert.equal(signals[0].aborted, true);
 });

@@ -1,4 +1,11 @@
-import { createMcpHandler, Server, type Implementation, type Tool } from '@modelcontextprotocol/server';
+import {
+  createMcpHandler,
+  InMemoryTransport,
+  McpServer,
+  type Implementation,
+  type Tool,
+  type Transport,
+} from '@modelcontextprotocol/server';
 import YAML from 'yaml';
 
 const UNCACHED = { ttlMs: 0, cacheScope: 'private' } as const;
@@ -35,6 +42,7 @@ export interface McpProtocolContext extends McpServerPresentation {
   callTool: (
     name: string,
     arguments_: Record<string, unknown> | undefined,
+    signal: AbortSignal,
   ) => Promise<{ output: unknown; isError: boolean }>;
 }
 
@@ -43,15 +51,15 @@ function serializeToolOutput(output: unknown): string {
   return typeof output === 'string' ? output : YAML.stringify(JSON.parse(JSON.stringify(output ?? null)));
 }
 
-function createServer({ serverInfo, instructions, listTools, callTool }: McpProtocolContext): Server {
-  const server = new Server(serverInfo, {
+function createServer({ serverInfo, instructions, listTools, callTool }: McpProtocolContext): McpServer {
+  const server = new McpServer(serverInfo, {
     capabilities: { tools: { listChanged: false } },
     instructions,
     cacheHints: { 'tools/list': UNCACHED, 'server/discover': UNCACHED },
   });
-  server.setRequestHandler('tools/list', () => ({ tools: listTools() }));
-  server.setRequestHandler('tools/call', async ({ params }) => {
-    const { output, isError } = await callTool(params.name, params.arguments);
+  server.server.setRequestHandler('tools/list', () => ({ tools: listTools() }));
+  server.server.setRequestHandler('tools/call', async ({ params }, ctx) => {
+    const { output, isError } = await callTool(params.name, params.arguments, ctx.mcpReq.signal);
     return { content: [{ type: 'text', text: serializeToolOutput(output) }], isError };
   });
   return server;
@@ -64,5 +72,11 @@ export class McpProtocol {
   handle(request: Request, parsedBody: unknown, context: McpProtocolContext): Promise<Response> {
     this.contexts.set(request, context);
     return this.handler.fetch(request, { parsedBody });
+  }
+
+  async open(context: McpProtocolContext): Promise<Transport> {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await createServer(context).connect(serverTransport);
+    return clientTransport;
   }
 }

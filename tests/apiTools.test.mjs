@@ -48,7 +48,7 @@ function createTools(endpoints, { toolTimeoutMs = 1_000, invisibleResourceIds = 
   return new AdminForthApiTools(createAdminForth(endpoints), resourceVisibility, PAGE_SIZE, toolTimeoutMs, adminPanelConfirmation);
 }
 
-function callTool(tools, name, args, { readOnly = false } = {}) {
+function callTool(tools, name, args, { readOnly = false, timeZone } = {}) {
   return tools.call({
     name,
     arguments: args,
@@ -58,6 +58,7 @@ function callTool(tools, name, args, { readOnly = false } = {}) {
     abortSignal: new AbortController().signal,
     readOnly,
     connection: { id: 'secret-1', name: 'Claude Code' },
+    timeZone,
   });
 }
 
@@ -275,6 +276,19 @@ test('get_resource_data compacts rows', async () => {
       enabled: false,
     }],
   });
+});
+
+test('get_resource_data shows datetimes in the time zone of the session', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource_data', {
+    data: [
+      { id: '1', created_at: '2026-10-02T13:41:24.123Z' },
+      { id: '2', created_at: '2026-01-15T23:30:00.000Z' },
+    ],
+  });
+
+  const result = await callTool(createTools([endpoint]), 'get_resource_data', { resourceId: 'cars' }, { timeZone: 'Europe/Kyiv' });
+
+  assert.deepEqual(result.output.data.map((row) => row.created_at), ['2026-10-02T16:41:24+03:00', '2026-01-16T01:30:00+02:00']);
 });
 
 test('get_resource_data tells to ask the user before the next page only for page requests', async () => {

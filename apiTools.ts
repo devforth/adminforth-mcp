@@ -1,6 +1,7 @@
 import type { Tool } from '@modelcontextprotocol/server';
 import type { McpAdminPanelConfirmation, McpConnection } from './adminPanelConfirmation.js';
 import { compactInputSchema } from './compactInputSchema.js';
+import { formatDatetime } from './datetime.js';
 import type { McpResourceVisibility } from './resourceVisibility.js';
 import { isErrorOutput } from './toolOutput.js';
 import type { McpPageSize } from './types.js';
@@ -17,14 +18,12 @@ import type {
 const METHODS_WITHOUT_REQUEST_BODY = new Set(['GET', 'HEAD']);
 const NON_TOOL_NAME_CHARACTER_RE = /[^a-zA-Z0-9_]+/g;
 const EDGE_UNDERSCORE_RE = /^_+|_+$/g;
-// Milliseconds cost tokens on every datetime value and are never needed to answer the user.
-const ISO_MILLISECONDS_RE = /\.\d+(?=Z$)/;
 const TOOL_TIMEOUT = Symbol('TOOL_TIMEOUT');
 // _label repeats field values of the row, _clickUrl is a frontend navigation helper.
 const ROW_HELPER_FIELDS = new Set(['_label', '_clickUrl']);
 // destructiveHint is only a hint: whether a client asks for approval depends on its permission mode,
 // so dangerous tools also require a confirmation in chat.
-const DANGEROUS_TOOL_NOTE = 'This tool changes data. If you have not loaded the mutate_data skill yet, load it with fetch_skill first. Before calling, show the user exactly what will change and wait for their explicit confirmation in chat, even when the client does not ask for approval.';
+const DANGEROUS_TOOL_NOTE = 'This tool changes data. If you have not loaded the mutate-data skill yet, load it with fetch_skill first. Before calling, show the user exactly what will change and wait for their explicit confirmation in chat, even when the client does not ask for approval.';
 
 // Column properties needed to read, filter and aggregate records; writes need the detailed response.
 // Non-sortable columns also get sortable: false.
@@ -44,7 +43,12 @@ type ToolOverride = {
   defaultArguments?: Record<string, unknown>;
   prepareArguments?: (handlerArguments: Record<string, unknown>) => Record<string, unknown>;
   // Receives every client argument with defaults applied, and the arguments exactly as the client passed them.
-  project?: (output: unknown, args: Record<string, unknown>, clientArgs: Record<string, unknown>) => unknown;
+  project?: (
+    output: unknown,
+    args: Record<string, unknown>,
+    clientArgs: Record<string, unknown>,
+    timeZone: string | undefined,
+  ) => unknown;
 };
 
 function createToolOverrides(pageSize: McpPageSize, adminforth: IAdminForth): Record<string, ToolOverride> {
@@ -64,18 +68,19 @@ function createToolOverrides(pageSize: McpPageSize, adminforth: IAdminForth): Re
       ),
     },
     get_resource_data: {
-      descriptionNote: `Returns ${pageSize.default} rows unless limit is passed, and at most ${pageSize.max} rows per call; the response note tells when more rows exist. Row properties with null values, empty arrays or empty objects are omitted, so a column missing from a row is empty. Datetimes are UTC in ISO 8601 without milliseconds. When you pass columns, include the primary key column to get record ids (composite keys come as _primaryKeyValue in list rows).`,
+      descriptionNote: `Returns ${pageSize.default} rows unless limit is passed, and at most ${pageSize.max} rows per call; the response note tells when more rows exist. Row properties with null values, empty arrays or empty objects are omitted, so a column missing from a row is empty. Datetimes are ISO 8601 without milliseconds and end with their UTC offset (Z is UTC). When you pass columns, include the primary key column to get record ids (composite keys come as _primaryKeyValue in list rows).`,
       defaultArguments: { source: 'list', limit: pageSize.default, offset: 0 },
       prepareArguments: (handlerArguments) => ({
         ...handlerArguments,
         limit: Math.min(handlerArguments.limit as number, pageSize.max),
       }),
-      project: (output, args, clientArgs) => compactResourceData(
+      project: (output, args, clientArgs, timeZone) => compactResourceData(
         output as GetResourceDataOutput,
         args,
         clientArgs,
         pageSize,
         datetimeColumnNames(adminforth, args.resourceId as string),
+        timeZone,
       ),
     },
   };
@@ -158,13 +163,17 @@ function isEmptyValue(value: unknown): boolean {
   return typeof value === 'object' && Object.keys(value).length === 0;
 }
 
-function compactRow(row: Record<string, unknown>, datetimeColumns: Set<string>): Record<string, unknown> {
+function compactRow(
+  row: Record<string, unknown>,
+  datetimeColumns: Set<string>,
+  timeZone: string | undefined,
+): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(row)
       .filter(([name, value]) => !isEmptyValue(value) && !ROW_HELPER_FIELDS.has(name))
       .map(([name, value]) => [
         name,
-        datetimeColumns.has(name) ? (value as string).replace(ISO_MILLISECONDS_RE, '') : value,
+        datetimeColumns.has(name) ? formatDatetime(value as string, timeZone) : value,
       ]),
   );
 }
@@ -179,6 +188,7 @@ function compactResourceData(
   clientArgs: Record<string, unknown>,
   pageSize: McpPageSize,
   datetimeColumns: Set<string>,
+  timeZone: string | undefined,
 ) {
   const offset = args.offset as number;
   const nextOffset = offset + data.length;
@@ -190,7 +200,7 @@ function compactResourceData(
   ].filter(Boolean);
   return {
     ...rest,
-    data: data.map((row) => compactRow(row, datetimeColumns)),
+    data: data.map((row) => compactRow(row, datetimeColumns, timeZone)),
     ...(notes.length > 0 && { note: notes.join(' ') }),
   };
 }
@@ -327,6 +337,7 @@ export class AdminForthApiTools {
     abortSignal: AbortSignal;
     readOnly: boolean;
     connection: McpConnection;
+    timeZone?: string;
   }): Promise<{ output: unknown; isError: boolean }> {
     const schema = this.catalog(params.readOnly).schemas.get(params.name);
     if (!schema) {
@@ -421,7 +432,9 @@ export class AdminForthApiTools {
 
     const isError = isErrorOutput(response.status, output);
     return {
-      output: isError || !override?.project ? output : override.project(output, args, params.arguments ?? {}),
+      output: isError || !override?.project
+        ? output
+        : override.project(output, args, params.arguments ?? {}, params.timeZone),
       isError,
     };
   }

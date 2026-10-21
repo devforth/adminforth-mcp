@@ -22,7 +22,17 @@ function matches(record, filter) {
  * Activates the plugin against an in-memory AdminForth: `records` is the auth secret table, `users` the users
  * table, JWTs are opaque keys of `jwts`. Endpoints and raw Express routes are collected by method and path.
  */
-export function createPlugin({ adminPanelOrigin = 'https://admin.example', users, expressApp, readOnly, registeredSchemas = [], twoFactorsAuth } = {}) {
+export function createPlugin({
+  adminPanelOrigin = 'https://admin.example',
+  users,
+  expressApp,
+  readOnly,
+  registeredSchemas = [],
+  twoFactorsAuth,
+  customComponentsDir,
+  globalPlugins = [],
+  resourcePlugins = [],
+} = {}) {
   const records = [];
   const userRecords = users ?? [{ id: 'user-1', email: 'owner@example.com' }, { id: 'user-2', email: 'other@example.com' }];
   const jwts = new Map();
@@ -32,15 +42,21 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
     config: {
       baseUrl: '',
       auth: { usersResourceId: 'admin_users', usernameField: 'email' },
-      customization: { brandName: 'Test Admin', customPages: [] },
+      customization: { brandName: 'Test Admin', customPages: [], customComponentsDir },
+      globalPlugins,
       resources: [
         { resourceId: 'mcp_auth_secrets', columns },
-        { resourceId: 'admin_users', columns: [{ name: 'id', primaryKey: true }] },
+        { resourceId: 'admin_users', columns: [{ name: 'id', primaryKey: true }], plugins: resourcePlugins },
       ],
     },
     codeInjector: { srcFoldersToSync: {}, allComponentNames: {} },
     getPluginsByClassName: (className) => (className === 'TwoFactorsAuthPlugin' && twoFactorsAuth ? [twoFactorsAuth] : []),
-    openApi: { registeredSchemas },
+    openApi: {
+      registeredSchemas,
+      validateRequestSchema: () => ({ valid: true }),
+      validateResponseSchema: () => ({ valid: true }),
+    },
+    tr: async (message) => message,
     auth: {
       issueJWT: (payload, type) => {
         const token = `jwt-${jwts.size}`;
@@ -88,7 +104,7 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
   });
 
   /** Calls the MCP endpoint with an Authorization header and returns its status, headers and response text. */
-  async function callMcp(authorization, body = { jsonrpc: '2.0', id: 1, method: 'ping' }) {
+  async function callMcp(authorization, body = { jsonrpc: '2.0', id: 1, method: 'ping' }, { abortSignal } = {}) {
     const headers = new Map();
     let status = 200;
     let message;
@@ -102,6 +118,7 @@ export function createPlugin({ adminPanelOrigin = 'https://admin.example', users
       query: {},
       cookies: [],
       requestUrl: '/adminapi/v1/mcp',
+      abortSignal,
       response: { setHeader: (name, value) => headers.set(name, value), setStatus: (code, text) => { status = code; message = text; } },
     });
     return { status, headers, message };

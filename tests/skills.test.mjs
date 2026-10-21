@@ -14,7 +14,7 @@ const CLIENT_INSTRUCTIONS_LIMIT = 2048;
 
 function createCustomFolder({ instructions, skills }) {
   const folder = mkdtempSync(join(tmpdir(), 'adminforth-mcp-skills-'));
-  writeFileSync(join(folder, 'instructions.md'), instructions);
+  if (instructions !== undefined) writeFileSync(join(folder, 'instructions.md'), instructions);
   for (const [name, content] of Object.entries(skills)) {
     mkdirSync(join(folder, 'skills', name), { recursive: true });
     writeFileSync(join(folder, 'skills', name, 'SKILL.md'), content);
@@ -30,40 +30,70 @@ test('renders placeholders and lists skills in the server instructions', () => {
   const skills = new McpSkills(createCustomFolder({
     instructions: '- Load at most {{ pageSize.max }} records.\n',
     skills: {
-      zeta: skillFile('zeta_skill', 'Zeta, {{pageSize.default}} rows.', 'Zeta body.'),
-      alpha: skillFile('alpha_skill', 'Alpha.', 'Alpha body with {{pageSize.max}}.'),
+      zeta: skillFile('zeta-skill', 'Zeta, {{pageSize.default}} rows.', 'Zeta body.'),
+      alpha: skillFile('alpha-skill', 'Alpha.', 'Alpha body with {{pageSize.max}}.'),
     },
   }), { 'pageSize.default': 20, 'pageSize.max': 200 });
 
   assert.equal(
     skills.serverInstructions(),
-    `- Load at most 200 records.\n\nBefore a task, load the matching skill with ${FETCH_SKILL_TOOL_NAME}; it has the detailed rules:\n- alpha_skill: Alpha.\n- zeta_skill: Zeta, 20 rows.`,
+    `- Load at most 200 records.\n\nBefore a task, load the matching skill with ${FETCH_SKILL_TOOL_NAME}; it has the detailed rules:\n- alpha-skill: Alpha.\n- zeta-skill: Zeta, 20 rows.`,
   );
-  assert.deepEqual(skills.call({ skillName: 'alpha_skill' }), { output: 'Alpha body with 200.', isError: false });
+  assert.deepEqual(skills.call({ skillName: 'alpha-skill' }), { output: 'Alpha body with 200.', isError: false });
 });
 
 test('describes fetch_skill with the skill names as an enum', () => {
   const skills = new McpSkills(createCustomFolder({
     instructions: 'Rules.',
-    skills: { only: skillFile('only_skill', 'Only.', 'Body.') },
+    skills: { only: skillFile('only-skill', 'Only.', 'Body.') },
   }), {});
 
   const tool = skills.toolDefinition();
   assert.equal(tool.name, FETCH_SKILL_TOOL_NAME);
-  assert.deepEqual(tool.inputSchema.properties.skillName.enum, ['only_skill']);
+  assert.deepEqual(tool.inputSchema.properties.skillName.enum, ['only-skill']);
   assert.deepEqual(tool.inputSchema.required, ['skillName']);
 });
 
 test('returns an error with the skill list for an unknown skill', () => {
   const skills = new McpSkills(createCustomFolder({
     instructions: 'Rules.',
-    skills: { only: skillFile('only_skill', 'Only.', 'Body.') },
+    skills: { only: skillFile('only-skill', 'Only.', 'Body.') },
   }), {});
 
   assert.deepEqual(skills.call({ skillName: 'missing' }), {
-    output: { error: 'Unknown skill: missing', skills: ['only_skill'] },
+    output: { error: 'Unknown skill: missing', skills: ['only-skill'] },
     isError: true,
   });
+});
+
+test('adds skills of shared custom folders as written, keeping the first skill of a name', () => {
+  const skills = new McpSkills(
+    createCustomFolder({ instructions: 'Rules.', skills: { fetch: skillFile('fetch-data', 'Own.', 'Own body.') } }),
+    {},
+    [
+      createCustomFolder({
+        skills: {
+          fetch: skillFile('fetch-data', 'Project.', 'Project body.'),
+          report: skillFile('report', 'Report.', 'Show {{ row.name }}.'),
+        },
+      }),
+      createCustomFolder({ skills: {} }),
+      createCustomFolder({ skills: { report: skillFile('report', 'Plugin report.', 'Plugin body.') } }),
+      createCustomFolder({ skills: { dashboard: skillFile('dashboard', 'Dashboard.', 'Dashboard body.') } }),
+    ],
+  );
+
+  assert.deepEqual(skills.toolDefinition().inputSchema.properties.skillName.enum, ['dashboard', 'fetch-data', 'report']);
+  assert.equal(skills.call({ skillName: 'fetch-data' }).output, 'Own body.');
+  assert.equal(skills.call({ skillName: 'report' }).output, 'Show {{ row.name }}.');
+});
+
+test('reads skill files with Windows line endings', () => {
+  const skills = new McpSkills(createCustomFolder({ instructions: 'Rules.', skills: { own: skillFile('own', 'Own.', 'Own body.') } }), {}, [
+    createCustomFolder({ skills: { crlf: '---\r\nname: crlf\r\ndescription: CRLF.\r\n---\r\nBody.\r\n' } }),
+  ]);
+
+  assert.equal(skills.call({ skillName: 'crlf' }).output, 'Body.');
 });
 
 test('fails on an unknown placeholder', () => {
@@ -75,9 +105,9 @@ test('fails on an unknown placeholder', () => {
 test('loads the bundled instructions and skills with the plugin values', () => {
   const skills = new McpSkills(PLUGIN_CUSTOM_FOLDER, PLUGIN_VALUES);
 
-  assert.deepEqual(skills.toolDefinition().inputSchema.properties.skillName.enum, ['analyze_data', 'fetch_data', 'mutate_data']);
+  assert.deepEqual(skills.toolDefinition().inputSchema.properties.skillName.enum, ['analyze-data', 'fetch-data', 'mutate-data']);
   assert.doesNotMatch(skills.serverInstructions(), /\{\{/);
-  for (const skillName of ['analyze_data', 'fetch_data', 'mutate_data']) {
+  for (const skillName of ['analyze-data', 'fetch-data', 'mutate-data']) {
     assert.doesNotMatch(skills.call({ skillName }).output, /\{\{/);
   }
 });

@@ -1,5 +1,5 @@
 ---
-name: analyze_data
+name: analyze-data
 description: Answer counts, sums, averages, trends, distributions and comparisons with aggregate.
 ---
 
