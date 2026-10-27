@@ -22,8 +22,9 @@ const carsResource = {
   },
 };
 
-function createAdminForth(endpoints) {
+function createAdminForth(endpoints, activatedPlugins) {
   return {
+    activatedPlugins,
     config: {
       baseUrl: '',
       resources: [{
@@ -43,9 +44,24 @@ function createAdminForth(endpoints) {
   };
 }
 
-function createTools(endpoints, { toolTimeoutMs = 1_000, invisibleResourceIds = [], adminPanelConfirmation } = {}) {
+function createTools(endpoints, { toolTimeoutMs = 1_000, invisibleResourceIds = [], adminPanelConfirmation, activatedPlugins = [] } = {}) {
   const resourceVisibility = { isVisible: async (_adminUser, resourceId) => !invisibleResourceIds.includes(resourceId) };
-  return new AdminForthApiTools(createAdminForth(endpoints), resourceVisibility, PAGE_SIZE, toolTimeoutMs, adminPanelConfirmation);
+  return new AdminForthApiTools(createAdminForth(endpoints, activatedPlugins), resourceVisibility, PAGE_SIZE, toolTimeoutMs, adminPanelConfirmation);
+}
+
+// Global plugins are created without resourceId: they have no resourceConfig.
+function pluginInstance({ pluginInstanceId, className, resourceId, pluginOptions = {}, representation = 'single' }) {
+  return {
+    pluginInstanceId,
+    className,
+    resourceConfig: resourceId && { resourceId },
+    pluginOptions,
+    instanceUniqueRepresentation: () => representation,
+  };
+}
+
+function pluginTool(pluginInstanceId, method, extra = {}) {
+  return { path: `/plugin/${pluginInstanceId}/${method}`, handler: async () => ({}), ...extra };
 }
 
 function callTool(tools, name, args, { readOnly = false, timeZone } = {}) {
@@ -210,6 +226,108 @@ test('get_resource advertises the detailed argument', () => {
 
   assert.equal(tool.inputSchema.properties.detailed.type, 'boolean');
   assert.deepEqual(tool.inputSchema.required, ['resourceId']);
+});
+
+test('get_resource lists the plugin instances of the resource that own tools, naming the option that tells them apart', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource });
+  const storageAdapter = { options: { pathColumnName: 'photos', secretAccessKey: 'secret' } };
+  const tools = createTools([
+    endpoint,
+    pluginTool('photos-id', 'get_file_upload_url'),
+    pluginTool('promo-id', 'get_file_upload_url'),
+    pluginTool('export-id', 'import_csv'),
+    pluginTool('avatar-id', 'get_file_upload_url'),
+    pluginTool('global-id', 'list'),
+    { path: '/plugin/twofa/verify', handler: async () => ({}) },
+  ], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'photos-id', className: 'UploadPlugin', resourceId: 'cars', pluginOptions: { pathColumnName: 'photos', storageAdapter }, representation: 'photos' }),
+      pluginInstance({ pluginInstanceId: 'promo-id', className: 'UploadPlugin', resourceId: 'cars', pluginOptions: { pathColumnName: 'promo_picture', storageAdapter }, representation: 'promo_picture' }),
+      pluginInstance({ pluginInstanceId: 'export-id', className: 'ImportExport', resourceId: 'cars' }),
+      // no tools
+      pluginInstance({ pluginInstanceId: 'markdown-id', className: 'MarkdownPlugin', resourceId: 'cars', pluginOptions: { fieldName: 'notes' }, representation: 'notes' }),
+      pluginInstance({ pluginInstanceId: 'avatar-id', className: 'UploadPlugin', resourceId: 'users', pluginOptions: { pathColumnName: 'avatar' }, representation: 'avatar' }),
+      pluginInstance({ pluginInstanceId: 'global-id', className: 'UserSessionsPlugin' }),
+    ],
+  });
+
+  const result = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+  const detailed = await callTool(tools, 'get_resource', { resourceId: 'cars', detailed: true });
+
+  assert.deepEqual(result.output.resource.plugins, [
+    { pathColumnName: 'photos', pluginInstanceId: 'photos-id', pluginClass: 'UploadPlugin', resourceId: 'cars' },
+    { pathColumnName: 'promo_picture', pluginInstanceId: 'promo-id', pluginClass: 'UploadPlugin', resourceId: 'cars' },
+    { pluginInstanceId: 'export-id', pluginClass: 'ImportExport', resourceId: 'cars' },
+  ]);
+  assert.deepEqual(detailed.output.resource.plugins, result.output.resource.plugins);
+});
+
+test('get_resource names a plugin instance by its unique representation when no single option holds it', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource });
+  const tools = createTools([endpoint, pluginTool('owners-id', 'link'), pluginTool('tags-id', 'link')], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'owners-id', className: 'LinkPlugin', resourceId: 'cars', pluginOptions: { linkedResourceId: 'users', label: 'users' }, representation: 'users' }),
+      pluginInstance({ pluginInstanceId: 'tags-id', className: 'LinkPlugin', resourceId: 'cars', pluginOptions: { linkedResourceId: 'tags' }, representation: 'link-tags' }),
+    ],
+  });
+
+  const result = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+
+  assert.deepEqual(result.output.resource.plugins, [
+    { instance: 'users', pluginInstanceId: 'owners-id', pluginClass: 'LinkPlugin', resourceId: 'cars' },
+    { instance: 'link-tags', pluginInstanceId: 'tags-id', pluginClass: 'LinkPlugin', resourceId: 'cars' },
+  ]);
+});
+
+test('get_resource names the option a lone plugin instance works with, and nothing when no option holds it', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource });
+  const tools = createTools([endpoint, pluginTool('photos-id', 'get_file_upload_url'), pluginTool('export-id', 'import_csv')], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'photos-id', className: 'UploadPlugin', resourceId: 'cars', pluginOptions: { pathColumnName: 'photos' }, representation: 'photos' }),
+      pluginInstance({ pluginInstanceId: 'export-id', className: 'ImportExport', resourceId: 'cars', pluginOptions: { fileFormat: 'csv' } }),
+    ],
+  });
+
+  const result = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+
+  assert.deepEqual(result.output.resource.plugins, [
+    { pathColumnName: 'photos', pluginInstanceId: 'photos-id', pluginClass: 'UploadPlugin', resourceId: 'cars' },
+    { pluginInstanceId: 'export-id', pluginClass: 'ImportExport', resourceId: 'cars' },
+  ]);
+});
+
+test('a plugin option named like an identifying field of a plugin instance does not replace it', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource });
+  const tools = createTools([endpoint, pluginTool('orders-id', 'show'), pluginTool('users-id', 'show')], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'orders-id', className: 'InlinePlugin', resourceId: 'cars', pluginOptions: { resourceId: 'orders' }, representation: 'orders' }),
+      pluginInstance({ pluginInstanceId: 'users-id', className: 'InlinePlugin', resourceId: 'cars', pluginOptions: { resourceId: 'users' }, representation: 'users' }),
+    ],
+  });
+
+  const result = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+
+  assert.deepEqual(result.output.resource.plugins.map((plugin) => plugin.resourceId), ['cars', 'cars']);
+});
+
+test('read-only connections see only the plugin instances that own read-only tools', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource }, { agent: { onlyReadsData: true } });
+  const tools = createTools([
+    endpoint,
+    pluginTool('jobs-id', 'get_tasks', { agent: { onlyReadsData: true } }),
+    pluginTool('export-id', 'import_csv'),
+  ], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'jobs-id', className: 'BackgroundJobsPlugin', resourceId: 'cars' }),
+      pluginInstance({ pluginInstanceId: 'export-id', className: 'ImportExport', resourceId: 'cars' }),
+    ],
+  });
+
+  const readOnly = await callTool(tools, 'get_resource', { resourceId: 'cars' }, { readOnly: true });
+  const full = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+
+  assert.deepEqual(readOnly.output.resource.plugins.map((plugin) => plugin.pluginInstanceId), ['jobs-id']);
+  assert.deepEqual(full.output.resource.plugins.map((plugin) => plugin.pluginInstanceId), ['jobs-id', 'export-id']);
 });
 
 test('get_resource_data fills default arguments and makes them optional', async () => {
@@ -414,6 +532,7 @@ test('lists only endpoints that only read data in read-only mode', async () => {
 test('names tools by the endpoint path without the baseUrl and API prefix', () => {
   const handler = async () => ({ ok: true });
   const adminforth = {
+    activatedPlugins: [],
     config: { baseUrl: '/backoffice' },
     openApi: {
       registeredSchemas: [

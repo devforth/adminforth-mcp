@@ -12,12 +12,15 @@ import type {
   AdminUser,
   IAdminForth,
   IAdminForthHttpResponse,
+  IAdminForthPlugin,
   IRegisteredApiSchema,
 } from 'adminforth';
 
 const METHODS_WITHOUT_REQUEST_BODY = new Set(['GET', 'HEAD']);
 const NON_TOOL_NAME_CHARACTER_RE = /[^a-zA-Z0-9_]+/g;
 const EDGE_UNDERSCORE_RE = /^_+|_+$/g;
+// Plugins register their endpoints under /plugin/<pluginInstanceId>/, some also under fixed paths like /plugin/twofa/.
+const PLUGIN_INSTANCE_PATH_RE = /^\/plugin\/([^/]+)\//;
 const TOOL_TIMEOUT = Symbol('TOOL_TIMEOUT');
 // _label repeats field values of the row, _clickUrl is a frontend navigation helper.
 const ROW_HELPER_FIELDS = new Set(['_label', '_clickUrl']);
@@ -33,6 +36,8 @@ const GET_RESOURCE_ESSENTIAL_FOREIGN_RESOURCE_FIELDS = ['resourceId', 'polymorph
 
 type GetResourceOutput = { resource: AdminForthResourceFrontend };
 type GetResourceDataOutput = { data: Array<Record<string, unknown>>; total?: number; recordIds?: unknown[] };
+// A plugin instance as get_resource lists it: the plugin_<pluginInstanceId>_* tools belong to it.
+type AgentPluginInstance = Record<string, string> & { pluginInstanceId: string; pluginClass: string; resourceId: string };
 
 type ToolOverride = {
   // Appended to the endpoint description, so clients learn how the tool behaves before loading the schema.
@@ -42,30 +47,34 @@ type ToolOverride = {
   // Arguments the client may omit: they are dropped from the required list and filled with these values.
   defaultArguments?: Record<string, unknown>;
   prepareArguments?: (handlerArguments: Record<string, unknown>) => Record<string, unknown>;
-  // Receives every client argument with defaults applied, and the arguments exactly as the client passed them.
+  // Receives every client argument with defaults applied, the arguments exactly as the client passed them,
+  // and the catalog the tool was called from.
   project?: (
     output: unknown,
     args: Record<string, unknown>,
     clientArgs: Record<string, unknown>,
     timeZone: string | undefined,
+    catalog: ToolCatalog,
   ) => unknown;
 };
 
 function createToolOverrides(pageSize: McpPageSize, adminforth: IAdminForth): Record<string, ToolOverride> {
   return {
     get_resource: {
-      descriptionNote: 'By default only the columns needed to read, filter and aggregate records are returned. Pass detailed: true right away when you are going to create or update records or run actions; the detailed response already includes the default one.',
+      descriptionNote: 'By default only the columns needed to read, filter and aggregate records are returned. Pass detailed: true right away when you are going to create or update records or run actions; the detailed response already includes the default one. plugins lists the plugin instances of the resource that the plugin_<pluginInstanceId>_* tools belong to; instances of one plugin differ in the option shown next to them.',
       arguments: {
         detailed: {
           type: 'boolean',
           description: 'Set to true before create_record, update_record, start_custom_action or start_custom_bulk_action: it returns every column property (required fields, which fields can be set on create and edit, validation rules, length and value limits, showIf conditions, editing notes) and the custom and bulk actions of the resource. By default only the column properties needed to read, filter and aggregate records are returned.',
         },
       },
-      project: (output, { detailed }) => (
-        detailed
+      project: (output, { detailed }, _clientArgs, _timeZone, catalog) => {
+        const { resource } = detailed
           ? withoutFrontendOnlyFields(output as GetResourceOutput)
-          : essentialResource(output as GetResourceOutput)
-      ),
+          : essentialResource(output as GetResourceOutput);
+        const plugins = catalog.resourcePlugins.get(resource.resourceId);
+        return { resource: plugins ? { ...resource, plugins } : resource };
+      },
     },
     get_resource_data: {
       descriptionNote: `Returns ${pageSize.default} rows unless limit is passed, and at most ${pageSize.max} rows per call; the response note tells when more rows exist. Row properties with null values, empty arrays or empty objects are omitted, so a column missing from a row is empty. Datetimes are ISO 8601 without milliseconds and end with their UTC offset (Z is UTC). When you pass columns, include the primary key column to get record ids (composite keys come as _primaryKeyValue in list rows).`,
@@ -93,6 +102,7 @@ type RegisteredToolSchema = IRegisteredApiSchema & {
 interface ToolCatalog {
   schemas: Map<string, RegisteredToolSchema>;
   tools: Tool[];
+  resourcePlugins: Map<string, AgentPluginInstance[]>;
 }
 
 function isRegisteredToolSchema(schema: IRegisteredApiSchema): schema is RegisteredToolSchema {
@@ -101,6 +111,28 @@ function isRegisteredToolSchema(schema: IRegisteredApiSchema): schema is Registe
 
 function endpointPathToToolName(path: string): string {
   return path.replace(NON_TOOL_NAME_CHARACTER_RE, '_').replace(EDGE_UNDERSCORE_RE, '');
+}
+
+// instanceUniqueRepresentation is usually the value of one plugin option, like pathColumnName of the upload plugin,
+// and the option name tells agents what the instance works with. Only top-level options are compared, so adapters
+// are never read. A value no single option holds still tells instances of one plugin apart; a lone instance needs
+// none, its representation is a constant like 'single'.
+function instanceParams(plugin: IAdminForthPlugin, hasSameClassPlugins: boolean): Record<string, string> {
+  const representation = plugin.instanceUniqueRepresentation(plugin.pluginOptions);
+  const keys = Object.keys(plugin.pluginOptions).filter((key) => plugin.pluginOptions[key] === representation);
+  if (keys.length === 1) return { [keys[0]]: representation };
+  return hasSameClassPlugins ? { instance: representation } : {};
+}
+
+// The identifying fields go last, so a plugin option of the same name cannot replace them.
+function agentPluginInstance(plugin: IAdminForthPlugin, resourcePlugins: IAdminForthPlugin[]): AgentPluginInstance {
+  const hasSameClassPlugins = resourcePlugins.some((other) => other !== plugin && other.className === plugin.className);
+  return {
+    ...instanceParams(plugin, hasSameClassPlugins),
+    pluginInstanceId: plugin.pluginInstanceId,
+    pluginClass: plugin.className,
+    resourceId: plugin.resourceConfig.resourceId,
+  };
 }
 
 // Drops frontend-only parts of the get_resource response that are useless for MCP clients and only waste their context.
@@ -288,7 +320,25 @@ export class AdminForthApiTools {
           annotations: { destructiveHint: true },
         }),
       }));
-    return { schemas, tools };
+    return { schemas, tools, resourcePlugins: this.resourcePlugins(schemas, apiPrefix) };
+  }
+
+  // Instances that own tools of the catalog, by resource. Global plugins have no resourceConfig, so they are not listed.
+  private resourcePlugins(schemas: Map<string, RegisteredToolSchema>, apiPrefix: string): Map<string, AgentPluginInstance[]> {
+    const toolPluginInstanceIds = new Set(
+      Array.from(schemas.values())
+        .flatMap((schema) => schema.path.slice(apiPrefix.length).match(PLUGIN_INSTANCE_PATH_RE)?.[1] ?? []),
+    );
+    const pluginsByResource = new Map<string, IAdminForthPlugin[]>();
+    for (const plugin of this.adminforth.activatedPlugins) {
+      if (!plugin.resourceConfig || !toolPluginInstanceIds.has(plugin.pluginInstanceId)) continue;
+      const { resourceId } = plugin.resourceConfig;
+      pluginsByResource.set(resourceId, [...(pluginsByResource.get(resourceId) ?? []), plugin]);
+    }
+    return new Map(Array.from(pluginsByResource, ([resourceId, plugins]) => [
+      resourceId,
+      plugins.map((plugin) => agentPluginInstance(plugin, plugins)),
+    ]));
   }
 
   private description(name: string, schema: RegisteredToolSchema): { description?: string } {
@@ -339,7 +389,8 @@ export class AdminForthApiTools {
     connection: McpConnection;
     timeZone?: string;
   }): Promise<{ output: unknown; isError: boolean }> {
-    const schema = this.catalog(params.readOnly).schemas.get(params.name);
+    const catalog = this.catalog(params.readOnly);
+    const schema = catalog.schemas.get(params.name);
     if (!schema) {
       return { output: { error: `Unknown tool: ${params.name}` }, isError: true };
     }
@@ -434,7 +485,7 @@ export class AdminForthApiTools {
     return {
       output: isError || !override?.project
         ? output
-        : override.project(output, args, params.arguments ?? {}, params.timeZone),
+        : override.project(output, args, params.arguments ?? {}, params.timeZone, catalog),
       isError,
     };
   }

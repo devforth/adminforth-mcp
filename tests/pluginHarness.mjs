@@ -39,6 +39,7 @@ export function createPlugin({
   const authorizedUsers = [];
   const columns = Object.values(SECRET_OPTIONS).slice(1).map((name) => ({ name, primaryKey: name === 'id' }));
   const adminforth = {
+    activatedPlugins: [...globalPlugins, ...resourcePlugins],
     config: {
       baseUrl: '',
       auth: { usersResourceId: 'admin_users', usernameField: 'email' },
