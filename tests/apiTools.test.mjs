@@ -330,6 +330,69 @@ test('read-only connections see only the plugin instances that own read-only too
   assert.deepEqual(full.output.resource.plugins.map((plugin) => plugin.pluginInstanceId), ['jobs-id', 'export-id']);
 });
 
+function uploadInstance(pluginInstanceId, resourceId) {
+  return pluginInstance({ pluginInstanceId, className: 'UploadPlugin', resourceId });
+}
+
+function downloadUrlEndpoint(pluginInstanceId) {
+  return recordingEndpoint(`/plugin/${pluginInstanceId}/get-file-download-url`, { url: `https://files.example/${pluginInstanceId}` }, {
+    description: 'Returns a download URL of a file.',
+    request_schema: { type: 'object', required: ['filePath'], properties: { filePath: { type: 'string' } }, additionalProperties: false },
+  });
+}
+
+test('the same endpoint of every instance of a plugin is one tool that takes pluginInstanceId', () => {
+  const tools = createTools([downloadUrlEndpoint('photos-id').endpoint, downloadUrlEndpoint('promo-id').endpoint], {
+    activatedPlugins: [uploadInstance('photos-id', 'cars'), uploadInstance('promo-id', 'cars')],
+  });
+
+  const listed = tools.list(false);
+
+  assert.deepEqual(listed.map((tool) => tool.name), ['plugin_UploadPlugin_get_file_download_url']);
+  assert.match(listed[0].description, /^Returns a download URL of a file\. Runs for one UploadPlugin instance: pass its pluginInstanceId/);
+  assert.deepEqual(listed[0].inputSchema.required, ['pluginInstanceId', 'filePath']);
+  assert.deepEqual(Object.keys(listed[0].inputSchema.properties), ['pluginInstanceId', 'filePath']);
+});
+
+test('a plugin tool runs the endpoint of the instance passed in pluginInstanceId and does not pass pluginInstanceId on', async () => {
+  const photos = downloadUrlEndpoint('photos-id');
+  const promo = downloadUrlEndpoint('promo-id');
+  const tools = createTools([photos.endpoint, promo.endpoint], {
+    activatedPlugins: [uploadInstance('photos-id', 'cars'), uploadInstance('promo-id', 'cars')],
+  });
+
+  const result = await callTool(tools, 'plugin_UploadPlugin_get_file_download_url', { pluginInstanceId: 'promo-id', filePath: 'a.jpg' });
+
+  assert.deepEqual(result, { output: { url: 'https://files.example/promo-id' }, isError: false });
+  assert.deepEqual(promo.calls[0].body, { filePath: 'a.jpg' });
+  assert.equal(photos.calls.length, 0);
+});
+
+test('a plugin tool rejects a pluginInstanceId of no instance of its plugin', async () => {
+  const { endpoint, calls } = downloadUrlEndpoint('photos-id');
+  const tools = createTools([endpoint, pluginTool('export-id', 'import_csv')], {
+    activatedPlugins: [uploadInstance('photos-id', 'cars'), pluginInstance({ pluginInstanceId: 'export-id', className: 'ImportExport', resourceId: 'cars' })],
+  });
+
+  const result = await callTool(tools, 'plugin_UploadPlugin_get_file_download_url', { pluginInstanceId: 'export-id', filePath: 'a.jpg' });
+
+  assert.deepEqual(result, { output: { error: 'Unknown pluginInstanceId: export-id' }, isError: true });
+  assert.equal(calls.length, 0);
+});
+
+test('a plugin tool does not run for an instance on a resource hidden from the user', async () => {
+  const { endpoint, calls } = downloadUrlEndpoint('payments-id');
+  const tools = createTools([endpoint], {
+    invisibleResourceIds: ['payments'],
+    activatedPlugins: [uploadInstance('payments-id', 'payments')],
+  });
+
+  const result = await callTool(tools, 'plugin_UploadPlugin_get_file_download_url', { pluginInstanceId: 'payments-id', filePath: 'a.jpg' });
+
+  assert.deepEqual(result, { output: { error: 'Resource payments not found' }, isError: true });
+  assert.equal(calls.length, 0);
+});
+
 test('get_resource_data fills default arguments and makes them optional', async () => {
   const { endpoint, calls } = recordingEndpoint('/get_resource_data', { data: [], total: 0 }, {
     request_schema: {
