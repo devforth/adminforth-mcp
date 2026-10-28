@@ -12,12 +12,17 @@ import type {
   AdminUser,
   IAdminForth,
   IAdminForthHttpResponse,
+  IAdminForthPlugin,
   IRegisteredApiSchema,
 } from 'adminforth';
 
 const METHODS_WITHOUT_REQUEST_BODY = new Set(['GET', 'HEAD']);
 const NON_TOOL_NAME_CHARACTER_RE = /[^a-zA-Z0-9_]+/g;
 const EDGE_UNDERSCORE_RE = /^_+|_+$/g;
+// Plugins register their endpoints under /plugin/<pluginInstanceId>/, some also under fixed paths like /plugin/twofa/.
+const PLUGIN_INSTANCE_PATH_RE = /^\/plugin\/([^/]+)\//;
+const PLUGIN_INSTANCE_ID_ARGUMENT = 'pluginInstanceId';
+const ANY_ARGUMENTS_SCHEMA = { type: 'object', properties: {}, additionalProperties: true };
 const TOOL_TIMEOUT = Symbol('TOOL_TIMEOUT');
 // _label repeats field values of the row, _clickUrl is a frontend navigation helper.
 const ROW_HELPER_FIELDS = new Set(['_label', '_clickUrl']);
@@ -33,6 +38,8 @@ const GET_RESOURCE_ESSENTIAL_FOREIGN_RESOURCE_FIELDS = ['resourceId', 'polymorph
 
 type GetResourceOutput = { resource: AdminForthResourceFrontend };
 type GetResourceDataOutput = { data: Array<Record<string, unknown>>; total?: number; recordIds?: unknown[] };
+// A plugin instance as get_resource lists it: the plugin_<pluginClass>_* tools run its endpoints when called with its pluginInstanceId.
+type AgentPluginInstance = Record<string, string> & { pluginInstanceId: string; pluginClass: string; resourceId: string };
 
 type ToolOverride = {
   // Appended to the endpoint description, so clients learn how the tool behaves before loading the schema.
@@ -42,30 +49,34 @@ type ToolOverride = {
   // Arguments the client may omit: they are dropped from the required list and filled with these values.
   defaultArguments?: Record<string, unknown>;
   prepareArguments?: (handlerArguments: Record<string, unknown>) => Record<string, unknown>;
-  // Receives every client argument with defaults applied, and the arguments exactly as the client passed them.
+  // Receives every client argument with defaults applied, the arguments exactly as the client passed them,
+  // and the catalog the tool was called from.
   project?: (
     output: unknown,
     args: Record<string, unknown>,
     clientArgs: Record<string, unknown>,
     timeZone: string | undefined,
+    catalog: ToolCatalog,
   ) => unknown;
 };
 
 function createToolOverrides(pageSize: McpPageSize, adminforth: IAdminForth): Record<string, ToolOverride> {
   return {
     get_resource: {
-      descriptionNote: 'By default only the columns needed to read, filter and aggregate records are returned. Pass detailed: true right away when you are going to create or update records or run actions; the detailed response already includes the default one.',
+      descriptionNote: 'By default only the columns needed to read, filter and aggregate records are returned. Pass detailed: true right away when you are going to create or update records or run actions; the detailed response already includes the default one. plugins lists the plugin instances of the resource: pass the pluginInstanceId of one to the plugin_<pluginClass>_* tools; instances of one plugin differ in the option shown next to them.',
       arguments: {
         detailed: {
           type: 'boolean',
           description: 'Set to true before create_record, update_record, start_custom_action or start_custom_bulk_action: it returns every column property (required fields, which fields can be set on create and edit, validation rules, length and value limits, showIf conditions, editing notes) and the custom and bulk actions of the resource. By default only the column properties needed to read, filter and aggregate records are returned.',
         },
       },
-      project: (output, { detailed }) => (
-        detailed
+      project: (output, { detailed }, _clientArgs, _timeZone, catalog) => {
+        const { resource } = detailed
           ? withoutFrontendOnlyFields(output as GetResourceOutput)
-          : essentialResource(output as GetResourceOutput)
-      ),
+          : essentialResource(output as GetResourceOutput);
+        const plugins = catalog.resourcePlugins.get(resource.resourceId);
+        return { resource: plugins ? { ...resource, plugins } : resource };
+      },
     },
     get_resource_data: {
       descriptionNote: `Returns ${pageSize.default} rows unless limit is passed, and at most ${pageSize.max} rows per call; the response note tells when more rows exist. Row properties with null values, empty arrays or empty objects are omitted, so a column missing from a row is empty. Datetimes are ISO 8601 without milliseconds and end with their UTC offset (Z is UTC). When you pass columns, include the primary key column to get record ids (composite keys come as _primaryKeyValue in list rows).`,
@@ -90,10 +101,19 @@ type RegisteredToolSchema = IRegisteredApiSchema & {
   handler: NonNullable<IRegisteredApiSchema['handler']>;
 };
 
+type PluginInstanceEndpoint = { plugin: IAdminForthPlugin; schema: RegisteredToolSchema };
+
 interface ToolCatalog {
   schemas: Map<string, RegisteredToolSchema>;
+  // Every instance of a plugin registers the same endpoints under /plugin/<pluginInstanceId>/, so each endpoint
+  // is one tool for all instances: tool name → pluginInstanceId → the endpoint of that instance.
+  pluginTools: Map<string, Map<string, PluginInstanceEndpoint>>;
   tools: Tool[];
+  resourcePlugins: Map<string, AgentPluginInstance[]>;
 }
+
+// The endpoint a tool call runs and the resources it works with, which must be visible to the user.
+type CallTarget = { schema: RegisteredToolSchema; clientArguments: Record<string, unknown>; resourceIds: unknown[] };
 
 function isRegisteredToolSchema(schema: IRegisteredApiSchema): schema is RegisteredToolSchema {
   return typeof schema.handler === 'function' && !schema.agent?.hiddenFromAgents;
@@ -101,6 +121,28 @@ function isRegisteredToolSchema(schema: IRegisteredApiSchema): schema is Registe
 
 function endpointPathToToolName(path: string): string {
   return path.replace(NON_TOOL_NAME_CHARACTER_RE, '_').replace(EDGE_UNDERSCORE_RE, '');
+}
+
+// instanceUniqueRepresentation is usually the value of one plugin option, like pathColumnName of the upload plugin,
+// and the option name tells agents what the instance works with. Only top-level options are compared, so adapters
+// are never read. A value no single option holds still tells instances of one plugin apart; a lone instance needs
+// none, its representation is a constant like 'single'.
+function instanceParams(plugin: IAdminForthPlugin, hasSameClassPlugins: boolean): Record<string, string> {
+  const representation = plugin.instanceUniqueRepresentation(plugin.pluginOptions);
+  const keys = Object.keys(plugin.pluginOptions).filter((key) => plugin.pluginOptions[key] === representation);
+  if (keys.length === 1) return { [keys[0]]: representation };
+  return hasSameClassPlugins ? { instance: representation } : {};
+}
+
+// The identifying fields go last, so a plugin option of the same name cannot replace them.
+function agentPluginInstance(plugin: IAdminForthPlugin, resourcePlugins: IAdminForthPlugin[]): AgentPluginInstance {
+  const hasSameClassPlugins = resourcePlugins.some((other) => other !== plugin && other.className === plugin.className);
+  return {
+    ...instanceParams(plugin, hasSameClassPlugins),
+    pluginInstanceId: plugin.pluginInstanceId,
+    pluginClass: plugin.className,
+    resourceId: plugin.resourceConfig.resourceId,
+  };
 }
 
 // Drops frontend-only parts of the get_resource response that are useless for MCP clients and only waste their context.
@@ -220,6 +262,21 @@ function overrideInputSchema(
   };
 }
 
+// Endpoint schemas are strict and know nothing about plugin instances, so pluginInstanceId never reaches them.
+function withPluginInstanceIdArgument(inputSchema: Record<string, unknown>, pluginClass: string): Record<string, unknown> {
+  return {
+    ...inputSchema,
+    required: [PLUGIN_INSTANCE_ID_ARGUMENT, ...(Array.isArray(inputSchema.required) ? inputSchema.required : [])],
+    properties: {
+      [PLUGIN_INSTANCE_ID_ARGUMENT]: {
+        type: 'string',
+        description: `pluginInstanceId of the ${pluginClass} instance from plugins of get_resource.`,
+      },
+      ...(inputSchema.properties as Record<string, unknown>),
+    },
+  };
+}
+
 function withoutPluginArguments(
   args: Record<string, unknown>,
   override: ToolOverride | undefined,
@@ -265,39 +322,91 @@ export class AdminForthApiTools {
 
   private buildCatalog(readOnly: boolean): ToolCatalog {
     const apiPrefix = adminApiPrefix(this.adminforth.config.baseUrl);
-    const schemas = new Map(
-      this.adminforth.openApi.registeredSchemas
-        .filter(isRegisteredToolSchema)
-        .filter((schema) => !readOnly || schema.agent?.onlyReadsData)
-        .map((schema) => [endpointPathToToolName(schema.path.slice(apiPrefix.length)), schema] as const),
-    );
-    const tools = Array.from(schemas.entries())
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, schema]) => ({
-        name,
-        ...this.description(name, schema),
-        inputSchema: compactInputSchema(overrideInputSchema(schema.request_schema ?? {
-          type: 'object',
-          properties: {},
-          additionalProperties: true,
-        }, this.toolOverrides[name])) as Tool['inputSchema'],
-        ...(schema.agent?.onlyReadsData && {
-          annotations: { readOnlyHint: true },
-        }),
-        ...(schema.agent?.requiresHumanApproval && {
-          annotations: { destructiveHint: true },
-        }),
-      }));
-    return { schemas, tools };
+    const pluginsById = new Map(this.adminforth.activatedPlugins.map((plugin) => [plugin.pluginInstanceId, plugin]));
+    const schemas = new Map<string, RegisteredToolSchema>();
+    const pluginTools = new Map<string, Map<string, PluginInstanceEndpoint>>();
+    for (const schema of this.adminforth.openApi.registeredSchemas) {
+      if (!isRegisteredToolSchema(schema) || (readOnly && !schema.agent?.onlyReadsData)) continue;
+      const path = schema.path.slice(apiPrefix.length);
+      const pluginPath = path.match(PLUGIN_INSTANCE_PATH_RE);
+      const plugin = pluginPath && pluginsById.get(pluginPath[1]);
+      if (!plugin) {
+        schemas.set(endpointPathToToolName(path), schema);
+        continue;
+      }
+      const name = endpointPathToToolName(`plugin_${plugin.className}_${path.slice(pluginPath[0].length)}`);
+      pluginTools.set(name, (pluginTools.get(name) ?? new Map()).set(plugin.pluginInstanceId, { plugin, schema }));
+    }
+    const tools = [
+      ...Array.from(schemas, ([name, schema]) => this.tool(name, schema)),
+      // instances of one plugin share the endpoint code, so the first one describes the tool
+      ...Array.from(pluginTools, ([name, instances]) => {
+        const [{ plugin, schema }] = instances.values();
+        return this.tool(name, schema, plugin.className);
+      }),
+    ].sort((left, right) => left.name.localeCompare(right.name));
+    return { schemas, pluginTools, tools, resourcePlugins: this.resourcePlugins(pluginTools) };
   }
 
-  private description(name: string, schema: RegisteredToolSchema): { description?: string } {
+  private tool(name: string, schema: RegisteredToolSchema, pluginClass?: string): Tool {
+    const inputSchema = overrideInputSchema(schema.request_schema ?? ANY_ARGUMENTS_SCHEMA, this.toolOverrides[name]);
+    return {
+      name,
+      ...this.description(name, schema, pluginClass),
+      inputSchema: compactInputSchema(
+        pluginClass ? withPluginInstanceIdArgument(inputSchema, pluginClass) : inputSchema,
+      ) as Tool['inputSchema'],
+      ...(schema.agent?.onlyReadsData && {
+        annotations: { readOnlyHint: true },
+      }),
+      ...(schema.agent?.requiresHumanApproval && {
+        annotations: { destructiveHint: true },
+      }),
+    };
+  }
+
+  // Instances that own tools of the catalog, by resource. Global plugins have no resourceConfig, so they are not listed.
+  private resourcePlugins(pluginTools: ToolCatalog['pluginTools']): Map<string, AgentPluginInstance[]> {
+    const toolPluginInstanceIds = new Set(
+      Array.from(pluginTools.values()).flatMap((instances) => Array.from(instances.keys())),
+    );
+    const pluginsByResource = new Map<string, IAdminForthPlugin[]>();
+    for (const plugin of this.adminforth.activatedPlugins) {
+      if (!plugin.resourceConfig || !toolPluginInstanceIds.has(plugin.pluginInstanceId)) continue;
+      const { resourceId } = plugin.resourceConfig;
+      pluginsByResource.set(resourceId, [...(pluginsByResource.get(resourceId) ?? []), plugin]);
+    }
+    return new Map(Array.from(pluginsByResource, ([resourceId, plugins]) => [
+      resourceId,
+      plugins.map((plugin) => agentPluginInstance(plugin, plugins)),
+    ]));
+  }
+
+  private description(name: string, schema: RegisteredToolSchema, pluginClass?: string): { description?: string } {
     const description = [
       schema.description,
       this.toolOverrides[name]?.descriptionNote,
+      pluginClass && `Runs for one ${pluginClass} instance: pass its pluginInstanceId from plugins of get_resource.`,
       schema.agent?.requiresHumanApproval && DANGEROUS_TOOL_NOTE,
     ].filter(Boolean).join(' ');
     return description ? { description } : {};
+  }
+
+  // A plugin tool runs the endpoint of the instance passed in pluginInstanceId and works with the resource of that
+  // instance; any tool may also name a resource in resourceId.
+  private callTarget(catalog: ToolCatalog, name: string, args: Record<string, unknown>): CallTarget | { error: string } {
+    const pluginTool = catalog.pluginTools.get(name);
+    if (pluginTool) {
+      const { [PLUGIN_INSTANCE_ID_ARGUMENT]: pluginInstanceId, ...clientArguments } = args;
+      const instance = pluginTool.get(pluginInstanceId as string);
+      if (!instance) return { error: `Unknown pluginInstanceId: ${pluginInstanceId}` };
+      // global plugins have no resourceConfig
+      const resourceIds = [instance.plugin.resourceConfig?.resourceId, clientArguments.resourceId];
+      return { schema: instance.schema, clientArguments, resourceIds };
+    }
+    const schema = catalog.schemas.get(name);
+    if (!schema) return { error: `Unknown tool: ${name}` };
+    return { schema, clientArguments: args, resourceIds: [args.resourceId] };
   }
 
   // The handler gets an abort signal that fires on timeout or when the MCP request is aborted;
@@ -339,17 +448,20 @@ export class AdminForthApiTools {
     connection: McpConnection;
     timeZone?: string;
   }): Promise<{ output: unknown; isError: boolean }> {
-    const schema = this.catalog(params.readOnly).schemas.get(params.name);
-    if (!schema) {
-      return { output: { error: `Unknown tool: ${params.name}` }, isError: true };
+    const catalog = this.catalog(params.readOnly);
+    const target = this.callTarget(catalog, params.name, params.arguments ?? {});
+    if ('error' in target) {
+      return { output: { error: target.error }, isError: true };
     }
-    const resourceId = params.arguments?.resourceId;
-    if (typeof resourceId === 'string' && !await this.resourceVisibility.isVisible(params.adminUser, resourceId)) {
-      return { output: { error: `Resource ${resourceId} not found` }, isError: true };
+    const { schema, clientArguments } = target;
+    for (const resourceId of target.resourceIds) {
+      if (typeof resourceId === 'string' && !await this.resourceVisibility.isVisible(params.adminUser, resourceId)) {
+        return { output: { error: `Resource ${resourceId} not found` }, isError: true };
+      }
     }
 
     const override = this.toolOverrides[params.name];
-    const args = { ...override?.defaultArguments, ...params.arguments };
+    const args = { ...override?.defaultArguments, ...clientArguments };
     const pluginFreeArguments = withoutPluginArguments(args, override);
     const handlerArguments = override?.prepareArguments?.(pluginFreeArguments) ?? pluginFreeArguments;
     const method = schema.method.toUpperCase();
@@ -434,7 +546,7 @@ export class AdminForthApiTools {
     return {
       output: isError || !override?.project
         ? output
-        : override.project(output, args, params.arguments ?? {}, params.timeZone),
+        : override.project(output, args, clientArguments, params.timeZone, catalog),
       isError,
     };
   }

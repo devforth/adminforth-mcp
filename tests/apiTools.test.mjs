@@ -22,8 +22,9 @@ const carsResource = {
   },
 };
 
-function createAdminForth(endpoints) {
+function createAdminForth(endpoints, activatedPlugins) {
   return {
+    activatedPlugins,
     config: {
       baseUrl: '',
       resources: [{
@@ -43,9 +44,24 @@ function createAdminForth(endpoints) {
   };
 }
 
-function createTools(endpoints, { toolTimeoutMs = 1_000, invisibleResourceIds = [], adminPanelConfirmation } = {}) {
+function createTools(endpoints, { toolTimeoutMs = 1_000, invisibleResourceIds = [], adminPanelConfirmation, activatedPlugins = [] } = {}) {
   const resourceVisibility = { isVisible: async (_adminUser, resourceId) => !invisibleResourceIds.includes(resourceId) };
-  return new AdminForthApiTools(createAdminForth(endpoints), resourceVisibility, PAGE_SIZE, toolTimeoutMs, adminPanelConfirmation);
+  return new AdminForthApiTools(createAdminForth(endpoints, activatedPlugins), resourceVisibility, PAGE_SIZE, toolTimeoutMs, adminPanelConfirmation);
+}
+
+// Global plugins are created without resourceId: they have no resourceConfig.
+function pluginInstance({ pluginInstanceId, className, resourceId, pluginOptions = {}, representation = 'single' }) {
+  return {
+    pluginInstanceId,
+    className,
+    resourceConfig: resourceId && { resourceId },
+    pluginOptions,
+    instanceUniqueRepresentation: () => representation,
+  };
+}
+
+function pluginTool(pluginInstanceId, method, extra = {}) {
+  return { path: `/plugin/${pluginInstanceId}/${method}`, handler: async () => ({}), ...extra };
 }
 
 function callTool(tools, name, args, { readOnly = false, timeZone } = {}) {
@@ -210,6 +226,171 @@ test('get_resource advertises the detailed argument', () => {
 
   assert.equal(tool.inputSchema.properties.detailed.type, 'boolean');
   assert.deepEqual(tool.inputSchema.required, ['resourceId']);
+});
+
+test('get_resource lists the plugin instances of the resource that own tools, naming the option that tells them apart', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource });
+  const storageAdapter = { options: { pathColumnName: 'photos', secretAccessKey: 'secret' } };
+  const tools = createTools([
+    endpoint,
+    pluginTool('photos-id', 'get_file_upload_url'),
+    pluginTool('promo-id', 'get_file_upload_url'),
+    pluginTool('export-id', 'import_csv'),
+    pluginTool('avatar-id', 'get_file_upload_url'),
+    pluginTool('global-id', 'list'),
+    { path: '/plugin/twofa/verify', handler: async () => ({}) },
+  ], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'photos-id', className: 'UploadPlugin', resourceId: 'cars', pluginOptions: { pathColumnName: 'photos', storageAdapter }, representation: 'photos' }),
+      pluginInstance({ pluginInstanceId: 'promo-id', className: 'UploadPlugin', resourceId: 'cars', pluginOptions: { pathColumnName: 'promo_picture', storageAdapter }, representation: 'promo_picture' }),
+      pluginInstance({ pluginInstanceId: 'export-id', className: 'ImportExport', resourceId: 'cars' }),
+      // no tools
+      pluginInstance({ pluginInstanceId: 'markdown-id', className: 'MarkdownPlugin', resourceId: 'cars', pluginOptions: { fieldName: 'notes' }, representation: 'notes' }),
+      pluginInstance({ pluginInstanceId: 'avatar-id', className: 'UploadPlugin', resourceId: 'users', pluginOptions: { pathColumnName: 'avatar' }, representation: 'avatar' }),
+      pluginInstance({ pluginInstanceId: 'global-id', className: 'UserSessionsPlugin' }),
+    ],
+  });
+
+  const result = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+  const detailed = await callTool(tools, 'get_resource', { resourceId: 'cars', detailed: true });
+
+  assert.deepEqual(result.output.resource.plugins, [
+    { pathColumnName: 'photos', pluginInstanceId: 'photos-id', pluginClass: 'UploadPlugin', resourceId: 'cars' },
+    { pathColumnName: 'promo_picture', pluginInstanceId: 'promo-id', pluginClass: 'UploadPlugin', resourceId: 'cars' },
+    { pluginInstanceId: 'export-id', pluginClass: 'ImportExport', resourceId: 'cars' },
+  ]);
+  assert.deepEqual(detailed.output.resource.plugins, result.output.resource.plugins);
+});
+
+test('get_resource names a plugin instance by its unique representation when no single option holds it', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource });
+  const tools = createTools([endpoint, pluginTool('owners-id', 'link'), pluginTool('tags-id', 'link')], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'owners-id', className: 'LinkPlugin', resourceId: 'cars', pluginOptions: { linkedResourceId: 'users', label: 'users' }, representation: 'users' }),
+      pluginInstance({ pluginInstanceId: 'tags-id', className: 'LinkPlugin', resourceId: 'cars', pluginOptions: { linkedResourceId: 'tags' }, representation: 'link-tags' }),
+    ],
+  });
+
+  const result = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+
+  assert.deepEqual(result.output.resource.plugins, [
+    { instance: 'users', pluginInstanceId: 'owners-id', pluginClass: 'LinkPlugin', resourceId: 'cars' },
+    { instance: 'link-tags', pluginInstanceId: 'tags-id', pluginClass: 'LinkPlugin', resourceId: 'cars' },
+  ]);
+});
+
+test('get_resource names the option a lone plugin instance works with, and nothing when no option holds it', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource });
+  const tools = createTools([endpoint, pluginTool('photos-id', 'get_file_upload_url'), pluginTool('export-id', 'import_csv')], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'photos-id', className: 'UploadPlugin', resourceId: 'cars', pluginOptions: { pathColumnName: 'photos' }, representation: 'photos' }),
+      pluginInstance({ pluginInstanceId: 'export-id', className: 'ImportExport', resourceId: 'cars', pluginOptions: { fileFormat: 'csv' } }),
+    ],
+  });
+
+  const result = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+
+  assert.deepEqual(result.output.resource.plugins, [
+    { pathColumnName: 'photos', pluginInstanceId: 'photos-id', pluginClass: 'UploadPlugin', resourceId: 'cars' },
+    { pluginInstanceId: 'export-id', pluginClass: 'ImportExport', resourceId: 'cars' },
+  ]);
+});
+
+test('a plugin option named like an identifying field of a plugin instance does not replace it', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource });
+  const tools = createTools([endpoint, pluginTool('orders-id', 'show'), pluginTool('users-id', 'show')], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'orders-id', className: 'InlinePlugin', resourceId: 'cars', pluginOptions: { resourceId: 'orders' }, representation: 'orders' }),
+      pluginInstance({ pluginInstanceId: 'users-id', className: 'InlinePlugin', resourceId: 'cars', pluginOptions: { resourceId: 'users' }, representation: 'users' }),
+    ],
+  });
+
+  const result = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+
+  assert.deepEqual(result.output.resource.plugins.map((plugin) => plugin.resourceId), ['cars', 'cars']);
+});
+
+test('read-only connections see only the plugin instances that own read-only tools', async () => {
+  const { endpoint } = recordingEndpoint('/get_resource', { resource: carsResource }, { agent: { onlyReadsData: true } });
+  const tools = createTools([
+    endpoint,
+    pluginTool('jobs-id', 'get_tasks', { agent: { onlyReadsData: true } }),
+    pluginTool('export-id', 'import_csv'),
+  ], {
+    activatedPlugins: [
+      pluginInstance({ pluginInstanceId: 'jobs-id', className: 'BackgroundJobsPlugin', resourceId: 'cars' }),
+      pluginInstance({ pluginInstanceId: 'export-id', className: 'ImportExport', resourceId: 'cars' }),
+    ],
+  });
+
+  const readOnly = await callTool(tools, 'get_resource', { resourceId: 'cars' }, { readOnly: true });
+  const full = await callTool(tools, 'get_resource', { resourceId: 'cars' });
+
+  assert.deepEqual(readOnly.output.resource.plugins.map((plugin) => plugin.pluginInstanceId), ['jobs-id']);
+  assert.deepEqual(full.output.resource.plugins.map((plugin) => plugin.pluginInstanceId), ['jobs-id', 'export-id']);
+});
+
+function uploadInstance(pluginInstanceId, resourceId) {
+  return pluginInstance({ pluginInstanceId, className: 'UploadPlugin', resourceId });
+}
+
+function downloadUrlEndpoint(pluginInstanceId) {
+  return recordingEndpoint(`/plugin/${pluginInstanceId}/get-file-download-url`, { url: `https://files.example/${pluginInstanceId}` }, {
+    description: 'Returns a download URL of a file.',
+    request_schema: { type: 'object', required: ['filePath'], properties: { filePath: { type: 'string' } }, additionalProperties: false },
+  });
+}
+
+test('the same endpoint of every instance of a plugin is one tool that takes pluginInstanceId', () => {
+  const tools = createTools([downloadUrlEndpoint('photos-id').endpoint, downloadUrlEndpoint('promo-id').endpoint], {
+    activatedPlugins: [uploadInstance('photos-id', 'cars'), uploadInstance('promo-id', 'cars')],
+  });
+
+  const listed = tools.list(false);
+
+  assert.deepEqual(listed.map((tool) => tool.name), ['plugin_UploadPlugin_get_file_download_url']);
+  assert.match(listed[0].description, /^Returns a download URL of a file\. Runs for one UploadPlugin instance: pass its pluginInstanceId/);
+  assert.deepEqual(listed[0].inputSchema.required, ['pluginInstanceId', 'filePath']);
+  assert.deepEqual(Object.keys(listed[0].inputSchema.properties), ['pluginInstanceId', 'filePath']);
+});
+
+test('a plugin tool runs the endpoint of the instance passed in pluginInstanceId and does not pass pluginInstanceId on', async () => {
+  const photos = downloadUrlEndpoint('photos-id');
+  const promo = downloadUrlEndpoint('promo-id');
+  const tools = createTools([photos.endpoint, promo.endpoint], {
+    activatedPlugins: [uploadInstance('photos-id', 'cars'), uploadInstance('promo-id', 'cars')],
+  });
+
+  const result = await callTool(tools, 'plugin_UploadPlugin_get_file_download_url', { pluginInstanceId: 'promo-id', filePath: 'a.jpg' });
+
+  assert.deepEqual(result, { output: { url: 'https://files.example/promo-id' }, isError: false });
+  assert.deepEqual(promo.calls[0].body, { filePath: 'a.jpg' });
+  assert.equal(photos.calls.length, 0);
+});
+
+test('a plugin tool rejects a pluginInstanceId of no instance of its plugin', async () => {
+  const { endpoint, calls } = downloadUrlEndpoint('photos-id');
+  const tools = createTools([endpoint, pluginTool('export-id', 'import_csv')], {
+    activatedPlugins: [uploadInstance('photos-id', 'cars'), pluginInstance({ pluginInstanceId: 'export-id', className: 'ImportExport', resourceId: 'cars' })],
+  });
+
+  const result = await callTool(tools, 'plugin_UploadPlugin_get_file_download_url', { pluginInstanceId: 'export-id', filePath: 'a.jpg' });
+
+  assert.deepEqual(result, { output: { error: 'Unknown pluginInstanceId: export-id' }, isError: true });
+  assert.equal(calls.length, 0);
+});
+
+test('a plugin tool does not run for an instance on a resource hidden from the user', async () => {
+  const { endpoint, calls } = downloadUrlEndpoint('payments-id');
+  const tools = createTools([endpoint], {
+    invisibleResourceIds: ['payments'],
+    activatedPlugins: [uploadInstance('payments-id', 'payments')],
+  });
+
+  const result = await callTool(tools, 'plugin_UploadPlugin_get_file_download_url', { pluginInstanceId: 'payments-id', filePath: 'a.jpg' });
+
+  assert.deepEqual(result, { output: { error: 'Resource payments not found' }, isError: true });
+  assert.equal(calls.length, 0);
 });
 
 test('get_resource_data fills default arguments and makes them optional', async () => {
@@ -414,6 +595,7 @@ test('lists only endpoints that only read data in read-only mode', async () => {
 test('names tools by the endpoint path without the baseUrl and API prefix', () => {
   const handler = async () => ({ ok: true });
   const adminforth = {
+    activatedPlugins: [],
     config: { baseUrl: '/backoffice' },
     openApi: {
       registeredSchemas: [
