@@ -34,6 +34,7 @@ const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_TOOL_TIMEOUT_MS = 15_000;
 const DEFAULT_TOOL_CALLS_PER_REQUEST = 10;
+const AUDIT_LOG_PLUGIN_CLASS_NAME = 'AuditLogPlugin';
 
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
 
@@ -115,6 +116,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
         isVisible: () => true,
       });
     }
+    this.showAgentLogosInAuditLog(adminforth.config.resources);
 
     this.urls = createMcpUrls(this.options.adminPanelOrigin, adminforth.config.baseUrl);
     this.authSecretStore = new McpAuthSecretStore(
@@ -172,6 +174,26 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
         ...otherPlugins.map((plugin) => plugin.customFolderPath),
       ])],
     );
+  }
+
+  /**
+   * Shows agents with their logos in the "executed by" column of the audit log, when the audit log has one.
+   * The audit log plugin is found in the config, it may be not activated yet.
+   */
+  private showAgentLogosInAuditLog(resources: AdminForthResource[]): void {
+    for (const resource of resources) {
+      const auditLog = resource.plugins?.find((plugin) => plugin.className === AUDIT_LOG_PLUGIN_CLASS_NAME);
+      const executedByColumnName = auditLog?.pluginOptions.resourceColumns.resourceExecutedByColumnName;
+      if (!executedByColumnName) continue;
+
+      const executedByColumn = resource.columns.find((column) => column.name === executedByColumnName)!;
+      // components set in the resource config win
+      executedByColumn.components = {
+        list: { file: this.componentPath('ExecutedBy.vue') },
+        show: { file: this.componentPath('ExecutedBy.vue') },
+        ...executedByColumn.components,
+      };
+    }
   }
 
   private validateAuthSecretResource(resource: AdminForthResource): void {

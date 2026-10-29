@@ -344,3 +344,16 @@ test('offers skills of the project and of other plugins', async () => {
     ['analyze-data', 'fetch-data', 'global-plugin-skill', 'mutate-data', 'project-skill', 'resource-plugin-skill'],
   );
 });
+
+test('shows agents with their logos in the executed by column of the audit log', () => {
+  const auditLog = { className: 'AuditLogPlugin', customFolderPath: join(tmpdir(), 'no-such-plugin'), pluginOptions: { resourceColumns: { resourceExecutedByColumnName: 'executed_by' } } };
+  const ownComponent = { file: '@@/OwnExecutedBy.vue' };
+  const auditLogs = { resourceId: 'audit_logs', columns: [{ name: 'executed_by', components: { show: ownComponent } }], options: {}, plugins: [auditLog] };
+
+  createPlugin({ resources: [auditLogs] });
+
+  assert.deepEqual(auditLogs.columns[0].components, {
+    list: { file: '@@/plugins/AdminForthMcpPlugin/ExecutedBy.vue' },
+    show: ownComponent,
+  });
+});

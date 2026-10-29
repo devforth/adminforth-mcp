@@ -32,6 +32,7 @@ export function createPlugin({
   customComponentsDir,
   globalPlugins = [],
   resourcePlugins = [],
+  resources = [],
 } = {}) {
   const records = [];
   const userRecords = users ?? [{ id: 'user-1', email: 'owner@example.com' }, { id: 'user-2', email: 'other@example.com' }];
@@ -48,6 +49,7 @@ export function createPlugin({
       resources: [
         { resourceId: 'mcp_auth_secrets', columns, options: {} },
         { resourceId: 'admin_users', columns: [{ name: 'id', primaryKey: true }], options: {}, plugins: resourcePlugins },
+        ...resources,
       ],
     },
     codeInjector: { srcFoldersToSync: {}, allComponentNames: {} },

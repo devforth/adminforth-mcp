@@ -127,9 +127,9 @@ import { IconCopy, IconPlus, IconTriangleAlert } from '@iconify-prerendered/vue-
 import { useCoreStore } from '@/stores/core';
 import adminforth from '@/adminforth';
 import { callAdminForthApi, formatDateTime } from '@/utils';
-import claudeCodeIcon from '@/assets/agents/claude-code.svg';
-import codexIcon from '@/assets/agents/codex.svg';
-import geminiIcon from '@/assets/agents/gemini.svg';
+import claudeCodeIcon from './icons/claude-code.svg';
+import codexIcon from './icons/codex.svg';
+import geminiIcon from './icons/gemini.svg';
 
 type Agent = { client: string; ver: string | null };
 type AuthSecret = {
