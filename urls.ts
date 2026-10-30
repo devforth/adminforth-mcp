@@ -15,6 +15,10 @@ export function adminApiPrefix(baseUrl: string): string {
   return `${baseUrl}/adminapi/v1`;
 }
 
+export function createAdminPanelUrl(adminPanelOrigin: string, baseUrl: string): string {
+  return new URL(baseUrl || '/', adminPanelOrigin).href;
+}
+
 export interface McpUrls {
   apiUrl: string;
   mcpUrl: string;
@@ -26,6 +30,6 @@ export function createMcpUrls(adminPanelOrigin: string, baseUrl: string): McpUrl
   return {
     apiUrl,
     mcpUrl: `${apiUrl}${MCP_PATH}`,
-    adminPanelUrl: new URL(baseUrl || '/', adminPanelOrigin).href,
+    adminPanelUrl: createAdminPanelUrl(adminPanelOrigin, baseUrl),
   };
 }

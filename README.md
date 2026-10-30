@@ -4,6 +4,8 @@
 
 The required `adminPanelOrigin` is the public origin agents connect to; the plugin combines it with the AdminForth `baseUrl` to build the MCP URL and the OAuth issuer.
 
+With `internalOnly: true` the plugin serves only the in-process connections of [`@adminforth/agent`](https://adminforth.dev/docs/tutorial/Plugins/agent/) and needs neither `adminPanelOrigin` nor the auth secret table.
+
 > **Security:** an MCP auth secret carries the full permissions of the user who created it. An agent
 > holding it can do everything that user can do in the admin panel, including destructive actions and
 > changes to that user's security settings. Issue one secret per agent, treat it like a password, and

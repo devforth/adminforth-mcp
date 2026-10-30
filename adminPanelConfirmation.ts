@@ -10,7 +10,7 @@ import type {
 import type { ContextualTwoFactorsAuth } from './twoFactorContext.js';
 import { MAX_ACTIONS_PER_CONFIRMATION } from './schemas/confirmation.js';
 import { isErrorOutput } from './toolOutput.js';
-import { adminApiPrefix, CONFIRMATION_PAGE_PATH, type McpUrls } from './urls.js';
+import { adminApiPrefix, CONFIRMATION_PAGE_PATH } from './urls.js';
 
 export const WAIT_FOR_CONFIRMATION_TOOL_NAME = 'wait_for_confirmation';
 const CONFIRMATION_TTL_MS = 10 * 60 * 1000;
@@ -46,17 +46,16 @@ function actsAsOne(pending: PendingCall, other: PendingCall): boolean {
 }
 
 export class McpAdminPanelConfirmation {
-  private readonly pageUrl: string;
+  private readonly pagePath: string;
   private readonly apiPrefix: string;
   private readonly pending = new Map<string, PendingCall>();
 
   constructor(
     private readonly adminforth: IAdminForth,
-    urls: McpUrls,
     private readonly twoFactorsAuth: ContextualTwoFactorsAuth,
     private readonly executionTimeoutMs: number,
   ) {
-    this.pageUrl = new URL(`${adminforth.config.baseUrl}${CONFIRMATION_PAGE_PATH}`, urls.apiUrl).href;
+    this.pagePath = `${adminforth.config.baseUrl}${CONFIRMATION_PAGE_PATH}`;
     this.apiPrefix = adminApiPrefix(adminforth.config.baseUrl);
   }
 
@@ -83,6 +82,7 @@ export class McpAdminPanelConfirmation {
     adminUser: AdminUserWithExecutor,
     path: string,
     args: Record<string, unknown>,
+    adminPanelOrigin: string,
   ): ToolCallResult | undefined {
     const { code, actionDescription } = (output ?? {}) as ToolOutput;
     if (code !== TWO_FACTOR_REQUIRED_CODE) return undefined;
@@ -109,7 +109,7 @@ export class McpAdminPanelConfirmation {
     return {
       output: {
         error: `This action needs a two-factor verification, which only the admin panel can ask for. Show the user the confirmationUrl, then call ${WAIT_FOR_CONFIRMATION_TOOL_NAME} with the confirmationId: it returns the result once the user confirms or declines the action there. A link confirms up to ${MAX_ACTIONS_PER_CONFIRMATION} pending actions of this connection at once, so after several such actions show the user only one link.`,
-        confirmationUrl: `${this.pageUrl}?id=${id}`,
+        confirmationUrl: new URL(`${this.pagePath}?id=${id}`, adminPanelOrigin).href,
         confirmationId: id,
       },
       isError: true,
