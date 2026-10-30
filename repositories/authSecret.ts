@@ -1,7 +1,6 @@
 import {
   Filters,
   Sorts,
-  type AdminForthResource,
   type AdminUser,
   type CreateResourceRecordResult,
   type DeleteResourceRecordResult,
@@ -28,16 +27,10 @@ export interface AuthSecret {
 export type NewAuthSecret = Pick<AuthSecret, 'id' | 'name' | 'secretHash' | 'userId' | 'readOnly' | 'oauthClientId'>;
 
 export class AuthSecretRepository {
-  private readonly resource: AdminForthResource;
-
   constructor(
     private readonly adminforth: IAdminForth,
     private readonly fields: McpAuthSecretResourceOptions,
-  ) {
-    this.resource = adminforth.config.resources.find(
-      (resource) => resource.resourceId === fields.resourceId,
-    )!;
-  }
+  ) {}
 
   async listByUser(userId: string): Promise<AuthSecret[]> {
     const records = await this.records().list(
@@ -59,21 +52,16 @@ export class AuthSecretRepository {
 
   create(authSecret: NewAuthSecret, adminUser: AdminUser, extra: HttpExtra): Promise<CreateResourceRecordResult> {
     const fields = this.fields;
-    return this.adminforth.createResourceRecord({
-      resource: this.resource,
-      adminUser,
-      extra,
-      record: {
-        [fields.idField]: authSecret.id,
-        [fields.nameField]: authSecret.name,
-        [fields.secretHashField]: authSecret.secretHash,
-        [fields.userIdField]: authSecret.userId,
-        [fields.createdAtField]: new Date().toISOString(),
-        [fields.lastUsedAtField]: null,
-        [fields.lastUsedByAgentField]: null,
-        [fields.readOnlyField]: authSecret.readOnly,
-        [fields.oauthClientIdField]: authSecret.oauthClientId,
-      },
+    return this.ownerWriter(adminUser, extra).create({
+      [fields.idField]: authSecret.id,
+      [fields.nameField]: authSecret.name,
+      [fields.secretHashField]: authSecret.secretHash,
+      [fields.userIdField]: authSecret.userId,
+      [fields.createdAtField]: new Date().toISOString(),
+      [fields.lastUsedAtField]: null,
+      [fields.lastUsedByAgentField]: null,
+      [fields.readOnlyField]: authSecret.readOnly,
+      [fields.oauthClientIdField]: authSecret.oauthClientId,
     });
   }
 
@@ -81,13 +69,12 @@ export class AuthSecretRepository {
     const record = await this.findRecordOfUser(id, adminUser);
     if (!record) return null;
 
-    return this.adminforth.deleteResourceRecord({
-      resource: this.resource,
-      record,
-      recordId: id,
-      adminUser,
-      extra,
-    });
+    try {
+      const deleted = await this.ownerWriter(adminUser, extra, { record }).delete(id);
+      return deleted ? {} : null;
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
   }
 
   async updateReadOnlyByIdAndUser(
@@ -99,14 +86,8 @@ export class AuthSecretRepository {
     const oldRecord = await this.findRecordOfUser(id, adminUser);
     if (!oldRecord) return null;
 
-    return this.adminforth.updateResourceRecord({
-      resource: this.resource,
-      recordId: id,
-      oldRecord,
-      updates: { [this.fields.readOnlyField]: readOnly },
-      adminUser,
-      extra,
-    });
+    return this.ownerWriter(adminUser, extra, { oldRecord })
+      .update(id, { [this.fields.readOnlyField]: readOnly });
   }
 
   async deleteById(id: string): Promise<void> {
@@ -133,6 +114,14 @@ export class AuthSecretRepository {
 
   private records(): IOperationalResource {
     return this.adminforth.resource(this.fields.resourceId);
+  }
+
+  /**
+   * Writes a user makes to their own secrets: the plugin checks the ownership itself, so they are
+   * system writes on the user's behalf, which run the resource hooks (e.g. the audit log).
+   */
+  private ownerWriter(adminUser: AdminUser, extra: HttpExtra, snapshot: { record?: any; oldRecord?: any } = {}) {
+    return this.records().asSystem({ adminUser, extra, ...snapshot });
   }
 
   private async findOne(filter: IAdminForthSingleFilter): Promise<AuthSecret | null> {
