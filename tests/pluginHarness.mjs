@@ -23,6 +23,7 @@ function matches(record, filter) {
  * table, JWTs are opaque keys of `jwts`. Endpoints and raw Express routes are collected by method and path.
  */
 export function createPlugin({
+  internalOnly = false,
   adminPanelOrigin = 'https://admin.example',
   users,
   expressApp,
@@ -47,7 +48,7 @@ export function createPlugin({
       customization: { brandName: 'Test Admin', customPages: [], customComponentsDir },
       globalPlugins,
       resources: [
-        { resourceId: 'mcp_auth_secrets', columns, options: {} },
+        ...(internalOnly ? [] : [{ resourceId: 'mcp_auth_secrets', columns, options: {} }]),
         { resourceId: 'admin_users', columns: [{ name: 'id', primaryKey: true }], options: {}, plugins: resourcePlugins },
         ...resources,
       ],
@@ -89,11 +90,9 @@ export function createPlugin({
     },
   };
 
-  const plugin = new AdminForthMcpPlugin({
-    adminPanelOrigin,
-    authSecretResource: SECRET_OPTIONS,
-    readOnly,
-  });
+  const plugin = new AdminForthMcpPlugin(internalOnly
+    ? { internalOnly, readOnly }
+    : { adminPanelOrigin, authSecretResource: SECRET_OPTIONS, readOnly });
   plugin.modifyGlobalConfig(adminforth);
 
   const endpoints = new Map();

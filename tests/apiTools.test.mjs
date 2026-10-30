@@ -74,6 +74,7 @@ function callTool(tools, name, args, { readOnly = false, timeZone } = {}) {
     abortSignal: new AbortController().signal,
     readOnly,
     connection: { id: 'secret-1', name: 'Claude Code' },
+    adminPanelOrigin: 'https://admin.example',
     timeZone,
   });
 }
@@ -636,7 +637,7 @@ test('returns the admin panel confirmation when the call needs one', async () =>
   });
   assert.equal(await callTool(tools, 'start_custom_action', { resourceId: 'cars', recordId: '42' }), offered);
   assert.deepEqual(unverifiedRequests.map(({ body, cookies }) => ({ body, cookies })), [{ body: { resourceId: 'cars', recordId: '42' }, cookies: [] }]);
-  assert.deepEqual(offers, [[output, { id: 'secret-1', name: 'Claude Code' }, { pk: '1' }, '/start_custom_action', { resourceId: 'cars', recordId: '42' }]]);
+  assert.deepEqual(offers, [[output, { id: 'secret-1', name: 'Claude Code' }, { pk: '1' }, '/start_custom_action', { resourceId: 'cars', recordId: '42' }, 'https://admin.example']]);
 });
 
 test('returns the tool output when the admin panel confirmation does not apply', async () => {

@@ -256,6 +256,7 @@ const AGENT_SESSION = {
   readOnly: false,
   headers: { 'accept-language': 'uk', cookie: 'adminforth_jwt=session', Authorization: 'Bearer session' },
   requestUrl: '/adminapi/v1/agent/turn',
+  adminPanelOrigin: 'https://agent.example',
 };
 
 function recordingToolSchemas(calls, handler = async () => ({ ok: true })) {
@@ -289,6 +290,31 @@ test('opens an in-memory connection that calls tools as the session user', async
   assert.equal(calls[0].adminUser, AGENT_SESSION.adminUser);
   assert.deepEqual(calls[0].headers, { 'accept-language': 'uk' });
   assert.equal(calls[0].requestUrl, AGENT_SESSION.requestUrl);
+});
+
+test('serves only in-memory connections in internal-only mode, without the auth secret resource', async () => {
+  const { plugin, adminforth, endpoints, rawRoutes } = createPlugin({ internalOnly: true, registeredSchemas: TOOL_SCHEMAS });
+
+  assert.deepEqual([...endpoints.keys()], ['GET /get_resources_list']);
+  assert.equal(rawRoutes.size, 0);
+  assert.deepEqual(adminforth.config.customization.customPages, []);
+  assert.equal(adminforth.config.auth.userMenuSettingsPages, undefined);
+  const client = await connectClient(await plugin.openConnection(AGENT_SESSION));
+  assert.deepEqual((await client.call('tools/list')).tools.map((tool) => tool.name), ['delete_record', 'get_resource', 'fetch_skill']);
+});
+
+test('builds the links of an in-memory connection from its admin panel origin', async () => {
+  const twoFactorsAuth = { withVerificationContext: (verificationResult, extra, callback) => callback() };
+  const { plugin } = createPlugin({
+    internalOnly: true,
+    twoFactorsAuth,
+    registeredSchemas: [{ method: 'POST', path: '/adminapi/v1/approve_listing', handler: async () => ({ ok: false, code: 'TWO_FACTOR_REQUIRED' }) }],
+  });
+  const client = await connectClient(await plugin.openConnection(AGENT_SESSION));
+
+  assert.match(client.initialize.instructions, /at https:\/\/agent\.example\/\./);
+  const result = await client.call('tools/call', { name: 'approve_listing', arguments: {} });
+  assert.match(result.content[0].text, /confirmationUrl: https:\/\/agent\.example\/mcp-confirm\?id=/);
 });
 
 test('does not pass the MCP auth secret to tool handlers', async () => {

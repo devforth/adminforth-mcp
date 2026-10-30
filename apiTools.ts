@@ -446,6 +446,7 @@ export class AdminForthApiTools {
     abortSignal: AbortSignal;
     readOnly: boolean;
     connection: McpConnection;
+    adminPanelOrigin: string;
     timeZone?: string;
   }): Promise<{ output: unknown; isError: boolean }> {
     const catalog = this.catalog(params.readOnly);
@@ -531,6 +532,7 @@ export class AdminForthApiTools {
       params.adminUser,
       schema.path.slice(adminApiPrefix(this.adminforth.config.baseUrl).length),
       handlerArguments,
+      params.adminPanelOrigin,
     );
     if (confirmation) return confirmation;
 

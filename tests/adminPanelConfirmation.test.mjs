@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { McpAdminPanelConfirmation } from '../dist/adminPanelConfirmation.js';
-import { createMcpUrls } from '../dist/urls.js';
 
 const USER = { pk: 'user-1', executedBy: 'Claude Code' };
 const ARGS = { resourceId: 'cars', recordId: '42', actionId: 'approve', extra: { note: 'original' } };
 const CONNECTION = { id: 'connection-1', name: 'Claude Code' };
+const ADMIN_PANEL_ORIGIN = 'https://admin.example';
 const OTHER_CONNECTION = { id: 'connection-2', name: 'Cursor' };
 const VERIFICATION = { token: 'browser-verification' };
 const REQUIRED = { ok: false, error: 'Confirmation result is required', code: 'TWO_FACTOR_REQUIRED' };
@@ -38,14 +38,9 @@ function setup(outputs = [{ ok: true }], { executionTimeoutMs = 1_000, verificat
       handler: async (input) => { calls.push(input); return outputs.shift(); },
     }] },
   };
-  const confirmation = new McpAdminPanelConfirmation(
-    adminforth,
-    createMcpUrls('https://admin.example', '/admin'),
-    twoFactorsAuth,
-    executionTimeoutMs,
-  );
-  const offer = (connection = CONNECTION, args = ARGS, user = USER) => confirmation.offer(REQUIRED, connection, user, '/start_custom_action', args).output.confirmationId;
-  const offered = confirmation.offer(REQUIRED, CONNECTION, USER, '/start_custom_action', ARGS);
+  const confirmation = new McpAdminPanelConfirmation(adminforth, twoFactorsAuth, executionTimeoutMs);
+  const offer = (connection = CONNECTION, args = ARGS, user = USER) => confirmation.offer(REQUIRED, connection, user, '/start_custom_action', args, ADMIN_PANEL_ORIGIN).output.confirmationId;
+  const offered = confirmation.offer(REQUIRED, CONNECTION, USER, '/start_custom_action', ARGS, ADMIN_PANEL_ORIGIN);
   const id = offered.output.confirmationId;
   const input = {
     adminUser: { pk: USER.pk },
@@ -60,14 +55,14 @@ function setup(outputs = [{ ok: true }], { executionTimeoutMs = 1_000, verificat
 test('offers a confirmation only for the TWO_FACTOR_REQUIRED code', () => {
   const { confirmation } = setup();
   for (const output of [{ ok: false, error: 'Failed', code: 'OTHER_ERROR' }, { ok: true }, null]) {
-    assert.equal(confirmation.offer(output, CONNECTION, USER, '/start_custom_action', ARGS), undefined);
+    assert.equal(confirmation.offer(output, CONNECTION, USER, '/start_custom_action', ARGS, ADMIN_PANEL_ORIGIN), undefined);
   }
 });
 
 test('describes the action with its description', () => {
   const { confirmation } = setup();
   const required = { ...REQUIRED, actionDescription: 'Approve listing of car 42' };
-  const { output } = confirmation.offer(required, CONNECTION, USER, '/start_custom_action', ARGS);
+  const { output } = confirmation.offer(required, CONNECTION, USER, '/start_custom_action', ARGS, ADMIN_PANEL_ORIGIN);
   const description = confirmation.describe(output.confirmationId, USER);
   assert.equal(description.actions[0].actionDescription, 'Approve listing of car 42');
 });

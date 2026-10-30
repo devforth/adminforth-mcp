@@ -25,8 +25,8 @@ import { McpResourceVisibility } from './resourceVisibility.js';
 import { createServerReadOnly, type ServerReadOnly } from './serverReadOnly.js';
 import { FETCH_SKILL_TOOL_NAME, McpSkills } from './skills.js';
 import { findContextualTwoFactorsAuth } from './twoFactorContext.js';
-import type { McpSession, PluginOptions } from './types.js';
-import { adminApiPrefix, CONFIRMATION_PAGE_PATH, createMcpUrls, type McpUrls } from './urls.js';
+import type { McpAuthSecretResourceOptions, McpExternalPluginOptions, McpSession, PluginOptions } from './types.js';
+import { adminApiPrefix, CONFIRMATION_PAGE_PATH, createAdminPanelUrl, createMcpUrls, type McpUrls } from './urls.js';
 
 const BEARER_TOKEN_RE = /^Bearer (\S+)$/i;
 const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie']);
@@ -37,6 +37,14 @@ const DEFAULT_TOOL_CALLS_PER_REQUEST = 10;
 const AUDIT_LOG_PLUGIN_CLASS_NAME = 'AuditLogPlugin';
 
 type AdminUserWithExecutor = AdminUser & { executedBy?: string };
+
+/** What serves MCP clients over HTTP; an internal-only plugin has none of it. */
+interface ExternalClients {
+  adminPanelOrigin: string;
+  urls: McpUrls;
+  authSecretStore: McpAuthSecretStore;
+  oauth: McpOAuth;
+}
 
 /**
  * Credentials never reach tool handlers, which may log, persist or forward the headers they are given: neither the
@@ -59,13 +67,11 @@ function jsonRpcAuthError(id: string | number | null = null) {
 export default class AdminForthMcpPlugin extends AdminForthPlugin {
   options: PluginOptions;
   pluginsScope: 'global' = 'global';
-  private authSecretStore!: McpAuthSecretStore;
-  private oauth!: McpOAuth;
+  private externalClients?: ExternalClients;
   private apiTools!: AdminForthApiTools;
   private resourceVisibility!: McpResourceVisibility;
   private adminPanelConfirmation?: McpAdminPanelConfirmation;
   private skills!: McpSkills;
-  private urls!: McpUrls;
   private readonly protocol = new McpProtocol();
   private readonly serverReadOnly: ServerReadOnly;
 
@@ -82,55 +88,10 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
 
   modifyGlobalConfig(adminforth: IAdminForth) {
     super.modifyGlobalConfig(adminforth);
-    const authSecretResource = adminforth.config.resources.find(
-      (resource) => resource.resourceId === this.options.authSecretResource.resourceId,
-    );
-    if (!authSecretResource) {
-      throw new Error(
-        `AdminForthMcpPlugin: auth secret resource "${this.options.authSecretResource.resourceId}" not found`,
-      );
-    }
-
-    this.validateAuthSecretResource(authSecretResource);
-    authSecretResource.options.agent = { ...authSecretResource.options.agent, hiddenFromAgents: true };
-    const secretHashColumn = authSecretResource.columns.find(
-      (column) => column.name === this.options.authSecretResource.secretHashField,
-    )!;
-    secretHashColumn.backendOnly = true;
-    secretHashColumn.showIn = {
-      show: false,
-      list: false,
-      create: false,
-      edit: false,
-      filter: false,
-    };
-
-    const auth = adminforth.config.auth!;
-    auth.userMenuSettingsPages ??= [];
-    if (!auth.userMenuSettingsPages.some((page) => page.slug === 'mcp')) {
-      auth.userMenuSettingsPages.push({
-        icon: 'lucide:bot',
-        pageLabel: 'MCP',
-        slug: 'mcp',
-        component: this.componentPath('McpSettings.vue'),
-        isVisible: () => true,
-      });
+    if (!this.options.internalOnly) {
+      this.externalClients = this.setupExternalClients(adminforth, this.options);
     }
     this.showAgentLogosInAuditLog(adminforth.config.resources);
-
-    this.urls = createMcpUrls(this.options.adminPanelOrigin, adminforth.config.baseUrl);
-    this.authSecretStore = new McpAuthSecretStore(
-      adminforth,
-      new AuthSecretRepository(adminforth, this.options.authSecretResource),
-    );
-    this.oauth = setupOAuth(
-      adminforth,
-      this.authSecretStore,
-      this.urls,
-      this.options,
-      this.componentPath('McpAuthorize.vue'),
-      this.serverReadOnly,
-    );
     const toolTimeoutMs = this.options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
     const twoFactorsAuth = findContextualTwoFactorsAuth(adminforth);
     if (twoFactorsAuth) {
@@ -140,7 +101,6 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
       });
       this.adminPanelConfirmation = new McpAdminPanelConfirmation(
         adminforth,
-        this.urls,
         twoFactorsAuth,
         toolTimeoutMs,
       );
@@ -196,8 +156,63 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     }
   }
 
-  private validateAuthSecretResource(resource: AdminForthResource): void {
-    const fields = this.options.authSecretResource;
+  private setupExternalClients(adminforth: IAdminForth, options: McpExternalPluginOptions): ExternalClients {
+    const authSecretResource = adminforth.config.resources.find(
+      (resource) => resource.resourceId === options.authSecretResource.resourceId,
+    );
+    if (!authSecretResource) {
+      throw new Error(
+        `AdminForthMcpPlugin: auth secret resource "${options.authSecretResource.resourceId}" not found`,
+      );
+    }
+
+    this.validateAuthSecretResource(authSecretResource, options.authSecretResource);
+    authSecretResource.options.agent = { ...authSecretResource.options.agent, hiddenFromAgents: true };
+    const secretHashColumn = authSecretResource.columns.find(
+      (column) => column.name === options.authSecretResource.secretHashField,
+    )!;
+    secretHashColumn.backendOnly = true;
+    secretHashColumn.showIn = {
+      show: false,
+      list: false,
+      create: false,
+      edit: false,
+      filter: false,
+    };
+
+    const auth = adminforth.config.auth!;
+    auth.userMenuSettingsPages ??= [];
+    if (!auth.userMenuSettingsPages.some((page) => page.slug === 'mcp')) {
+      auth.userMenuSettingsPages.push({
+        icon: 'lucide:bot',
+        pageLabel: 'MCP',
+        slug: 'mcp',
+        component: this.componentPath('McpSettings.vue'),
+        isVisible: () => true,
+      });
+    }
+
+    const urls = createMcpUrls(options.adminPanelOrigin, adminforth.config.baseUrl);
+    const authSecretStore = new McpAuthSecretStore(
+      adminforth,
+      new AuthSecretRepository(adminforth, options.authSecretResource),
+    );
+    return {
+      adminPanelOrigin: options.adminPanelOrigin,
+      urls,
+      authSecretStore,
+      oauth: setupOAuth(
+        adminforth,
+        authSecretStore,
+        urls,
+        options,
+        this.componentPath('McpAuthorize.vue'),
+        this.serverReadOnly,
+      ),
+    };
+  }
+
+  private validateAuthSecretResource(resource: AdminForthResource, fields: McpAuthSecretResourceOptions): void {
     for (const fieldName of [
       fields.idField,
       fields.nameField,
@@ -225,20 +240,22 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
 
   setupEndpoints(server: IHttpServer) {
     registerToolEndpoints(server, this.adminforth, this.resourceVisibility);
-    registerSettingsEndpoints(server, this.authSecretStore, this.urls.mcpUrl, this.serverReadOnly);
-    registerOAuthEndpoints(server, this.oauth, adminApiPrefix(this.adminforth.config.baseUrl));
     if (this.adminPanelConfirmation) registerConfirmationEndpoints(server, this.adminPanelConfirmation);
-    registerMcpEndpoints(server, (input) => this.handleMcpRequest(input));
+    const externalClients = this.externalClients;
+    if (!externalClients) return;
+    registerSettingsEndpoints(server, externalClients.authSecretStore, externalClients.urls.mcpUrl, this.serverReadOnly);
+    registerOAuthEndpoints(server, externalClients.oauth, adminApiPrefix(this.adminforth.config.baseUrl));
+    registerMcpEndpoints(server, (input) => this.handleMcpRequest(input, externalClients));
   }
 
   /** Accepts personal auth secrets and OAuth access tokens; access tokens are JWTs, secrets have their prefix. */
-  private async authenticate(token: string) {
-    if (token.startsWith(SECRET_PREFIX)) return this.authSecretStore.authenticate(token);
-    const accessToken = await this.oauth.verifyAccessToken(token);
-    return accessToken && this.authSecretStore.authenticateOAuthGrant(accessToken.grantId, accessToken.pk);
+  private async authenticate(token: string, { authSecretStore, oauth }: ExternalClients) {
+    if (token.startsWith(SECRET_PREFIX)) return authSecretStore.authenticate(token);
+    const accessToken = await oauth.verifyAccessToken(token);
+    return accessToken && authSecretStore.authenticateOAuthGrant(accessToken.grantId, accessToken.pk);
   }
 
-  private async handleMcpRequest(input: IAdminForthEndpointHandlerInput) {
+  private async handleMcpRequest(input: IAdminForthEndpointHandlerInput, externalClients: ExternalClients) {
     if (input.headers.origin) {
       input.response.setStatus(403);
       return {
@@ -249,12 +266,12 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     }
 
     const token = input.headers.authorization?.match(BEARER_TOKEN_RE)?.[1];
-    const authenticated = token ? await this.authenticate(token) : null;
+    const authenticated = token ? await this.authenticate(token, externalClients) : null;
     if (!authenticated) {
       // resource_metadata leads OAuth clients to the authorization server; invalid_token makes them refresh.
       input.response.setHeader(
         'WWW-Authenticate',
-        `Bearer ${token ? 'error="invalid_token", ' : ''}resource_metadata="${this.oauth.resourceMetadataUrl}"`,
+        `Bearer ${token ? 'error="invalid_token", ' : ''}resource_metadata="${externalClients.oauth.resourceMetadataUrl}"`,
       );
       input.response.setStatus(401);
       return jsonRpcAuthError(input.body.id ?? null);
@@ -274,14 +291,14 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     const client = reportedClient.client === UNKNOWN_CLIENT && authenticated.client
       ? authenticated.client
       : reportedClient;
-    this.authSecretStore.touch(authenticated.recordId, reportedClient);
+    externalClients.authSecretStore.touch(authenticated.recordId, reportedClient);
 
     const adminUser: AdminUserWithExecutor = {
       ...authenticated.adminUser,
       executedBy: formatMcpExecutedBy(client, authenticated.name),
     };
     const protocolResponse = await this.protocol.handle(
-      new Request(this.urls.mcpUrl, { method: 'POST', headers: input.headers, signal: input.abortSignal }),
+      new Request(externalClients.urls.mcpUrl, { method: 'POST', headers: input.headers, signal: input.abortSignal }),
       input.body,
       await this.sessionContext({
         adminUser,
@@ -289,6 +306,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
         readOnly: authenticated.readOnly,
         headers: input.headers,
         requestUrl: input.requestUrl,
+        adminPanelOrigin: externalClients.adminPanelOrigin,
       }),
     );
 
@@ -306,7 +324,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
     return {
       ...createMcpServerPresentation(
         this.adminforth.config.customization.brandName,
-        this.urls.adminPanelUrl,
+        createAdminPanelUrl(session.adminPanelOrigin, this.adminforth.config.baseUrl),
         this.skills.serverInstructions(),
         readOnly,
       ),
@@ -329,6 +347,7 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
           abortSignal: signal,
           readOnly,
           connection: session.connection,
+          adminPanelOrigin: session.adminPanelOrigin,
           timeZone: session.timeZone,
         });
       },
@@ -336,5 +355,12 @@ export default class AdminForthMcpPlugin extends AdminForthPlugin {
   }
 }
 
-export type { McpAuthSecretResourceOptions, McpOAuthClient, McpSession, PluginOptions } from './types.js';
+export type {
+  McpAuthSecretResourceOptions,
+  McpExternalPluginOptions,
+  McpInternalOnlyPluginOptions,
+  McpOAuthClient,
+  McpSession,
+  PluginOptions,
+} from './types.js';
 export { canonicalAgentName, formatMcpExecutedBy, readMcpClient } from './clientInfo.js';

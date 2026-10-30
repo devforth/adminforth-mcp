@@ -1,7 +1,7 @@
 import { logger, type IAdminForth } from 'adminforth';
 import type { McpAuthSecretStore } from '../authSecretStore.js';
 import type { ServerReadOnly } from '../serverReadOnly.js';
-import type { PluginOptions } from '../types.js';
+import type { McpExternalPluginOptions } from '../types.js';
 import { CONSENT_PAGE_PATH, type McpUrls } from '../urls.js';
 import { McpOAuth } from './authorizationServer.js';
 import { isLoopbackUrl } from './redirectUris.js';
@@ -10,7 +10,7 @@ export function setupOAuth(
   adminforth: IAdminForth,
   authSecretStore: McpAuthSecretStore,
   urls: McpUrls,
-  options: PluginOptions,
+  options: McpExternalPluginOptions,
   consentPageFile: string,
   serverReadOnly: ServerReadOnly,
 ): McpOAuth {
